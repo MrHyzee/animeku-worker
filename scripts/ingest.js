@@ -543,12 +543,16 @@ function buildMultiResHlsFmp4(videoFilePath, outputDir) {
     const playlistName = `${tier.name}.m3u8`;
     const segmentFileName = `${tier.name}.m4s`;
 
+    const inputArgs = useGpu ? ['-hwaccel', 'cuda'] : [];
     const vCodecArgs = useGpu
-      ? ['-c:v', 'h264_nvenc', '-preset', 'p4', '-rc', 'vbr', '-cq', '23']
-      : ['-c:v', 'libx264', '-preset', 'veryfast', '-tune', 'fastdecode', '-crf', '23', '-threads', '0'];
+      ? ['-c:v', 'h264_nvenc', '-preset', 'p1', '-tune', 'hq', '-rc', 'vbr', '-cq', '23']
+      : ['-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '23', '-threads', '0'];
 
     const args = [
-      '-y', '-v', 'warning',
+      '-y',
+      '-v', 'error',
+      '-stats',
+      ...inputArgs,
       '-i', absVideoPath,
       '-map', '0:v:0',
       '-map', '0:a:0?',
@@ -560,11 +564,9 @@ function buildMultiResHlsFmp4(videoFilePath, outputDir) {
       '-pix_fmt', 'yuv420p',
       '-g', '48',
       '-keyint_min', '48',
-      '-sc_threshold', '0',
       '-c:a', 'aac',
       '-b:a', '128k',
       '-ac', '2',
-      '-af', 'aresample=async=1:first_pts=0',
       '-max_muxing_queue_size', '2048',
       '-f', 'hls',
       '-hls_time', '6',
@@ -576,7 +578,7 @@ function buildMultiResHlsFmp4(videoFilePath, outputDir) {
       playlistName,
     ];
 
-    console.log(`   ⚙️  Merender stream ${tier.name} (${segmentFileName})...`);
+    console.log(`\n   ⚙️  [NVENC TURBO] Merender stream ${tier.name} (${segmentFileName})...`);
     execFileSync('ffmpeg', args, { cwd: outputDir, stdio: 'inherit' });
   }
 
