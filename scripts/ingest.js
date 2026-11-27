@@ -516,9 +516,26 @@ function getVideoHeight(videoFilePath) {
   }
 }
 
-async function buildMultiResHlsFmp4(videoFilePath, outputDir) {
+function getVideoDuration(videoFilePath) {
+  if (!hasCommand('ffprobe')) return 1420;
+  try {
+    const out = execFileSync('ffprobe', [
+      '-v', 'error',
+      '-show_entries', 'format=duration',
+      '-of', 'default=noprint_wrappers=1:nokey=1',
+      videoFilePath,
+    ], { encoding: 'utf8' }).trim();
+    const d = parseFloat(out);
+    return Number.isNaN(d) || d <= 0 ? 1420 : d;
+  } catch {
+    return 1420;
+  }
+}
+
+async function buildMultiResHlsFmp4(videoFilePath, outputDir, jobId = null) {
   fs.mkdirSync(outputDir, { recursive: true });
   const sourceHeight = getVideoHeight(videoFilePath);
+  const totalDurationSec = getVideoDuration(videoFilePath);
   const useGpu = hasNvidiaNvenc();
 
   // Aturan No-Upscale Resolution Ladder
@@ -535,24 +552,26 @@ async function buildMultiResHlsFmp4(videoFilePath, outputDir) {
   }
 
   console.log(`🎬 Memulai Konversi Multi-Resolution HLS fMP4 (HYBRID MULTITASKING: 3 STREAM SEKALIGUS)`);
-  console.log(`   Ladder: [${activeTiers.map(t => t.name).join(', ')}] berjalan serentak memanfaatkan RAM & GPU VRAM!`);
+  console.log(`   Ladder     : [${activeTiers.map(t => t.name).join(', ')}] berjalan serentak memanfaatkan RAM & GPU VRAM!`);
+  console.log(`   Akselerasi : ${useGpu ? '🚀 NVIDIA NVENC Hardware Transcoder (T4 GPU)' : '⚙️ CPU Multi-Thread'}`);
+  console.log(`   Durasi     : ~${Math.round(totalDurationSec / 60)} menit (${Math.round(totalDurationSec)}s)`);
 
   const absVideoPath = path.resolve(videoFilePath);
+  const tierProgress = {};
+  let lastReportTs = 0;
 
   await Promise.all(activeTiers.map(tier => {
     return new Promise((resolve, reject) => {
       const playlistName = `${tier.name}.m3u8`;
       const segmentFileName = `${tier.name}.m4s`;
 
-      const inputArgs = useGpu ? ['-hwaccel', 'cuda'] : [];
       const vCodecArgs = useGpu
-        ? ['-c:v', 'h264_nvenc', '-preset', 'p1', '-tune', 'hq', '-rc', 'vbr', '-cq', '23']
+        ? ['-c:v', 'h264_nvenc', '-preset', 'p1', '-tune', 'hq', '-rc', 'vbr', '-cq', '23', '-spatial-aq', '1']
         : ['-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '23', '-threads', '2'];
 
       const args = [
         '-y',
-        '-v', 'error',
-        ...inputArgs,
+        '-nostats',
         '-i', absVideoPath,
         '-map', '0:v:0',
         '-map', '0:a:0?',
@@ -580,25 +599,84 @@ async function buildMultiResHlsFmp4(videoFilePath, outputDir) {
 
       console.log(`   🚀 [SPAWN PARALEL] Stream ${tier.name} aktif merender bersamaan...`);
       const child = spawn('ffmpeg', args, { cwd: outputDir });
+
+      let stderrBuffer = '';
+      let lastLogTs = 0;
+
+      // PROAKTIF DRAIN STDERR AGAR PIPE BUFFER TIDAK DEADLOCK/HANG
+      child.stderr.on('data', chunk => {
+        const str = chunk.toString();
+        stderrBuffer += str;
+        if (stderrBuffer.length > 50000) stderrBuffer = stderrBuffer.slice(-20000);
+
+        const timeMatch = str.match(/time=(\d{2}):(\d{2}):(\d{2})/);
+        const speedMatch = str.match(/speed=\s*([\d\.]+)x/);
+        const fpsMatch = str.match(/fps=\s*([\d\.]+)/);
+
+        if (timeMatch) {
+          const curSec = parseInt(timeMatch[1], 10) * 3600 + parseInt(timeMatch[2], 10) * 60 + parseInt(timeMatch[3], 10);
+          tierProgress[tier.name] = {
+            curSec,
+            speed: speedMatch ? speedMatch[1] : '?',
+            fps: fpsMatch ? fpsMatch[1] : '?',
+          };
+
+          const now = Date.now();
+          if (now - lastLogTs > 4000) {
+            lastLogTs = now;
+            const pct = totalDurationSec > 0 ? Math.min(99, Math.round((curSec / totalDurationSec) * 100)) : '?';
+            console.log(`   ⚡ [${tier.name}] ${pct}% | speed: ${tierProgress[tier.name].speed}x | fps: ${tierProgress[tier.name].fps} | time: ${timeMatch[0].replace('time=', '')}`);
+          }
+
+          if (jobId && now - lastReportTs > 12000) {
+            lastReportTs = now;
+            let sumPct = 0;
+            let activeCount = 0;
+            for (const t of activeTiers) {
+              if (tierProgress[t.name]) {
+                sumPct += (tierProgress[t.name].curSec / (totalDurationSec || 1400)) * 100;
+                activeCount++;
+              }
+            }
+            if (activeCount > 0) {
+              const avgPct = sumPct / activeCount;
+              const mappedProgress = Math.min(88, Math.max(75, 75 + Math.round(avgPct * 0.13)));
+              const statusLine = activeTiers.map(t => `${t.name}:${tierProgress[t.name]?.speed ? tierProgress[t.name].speed + 'x' : '...'}`).join(' ');
+              reportJobProgress(jobId, {
+                status: 'transcoding',
+                percent: mappedProgress,
+                log: `Merender paralel HLS [${statusLine}]...`,
+              });
+            }
+          }
+        }
+      });
+
+      child.stdout.on('data', () => {}); // Drain stdout
+
       child.on('close', code => {
         if (code === 0) {
           console.log(`   ✅ [STREAM SELESAI] Stream ${tier.name} (${segmentFileName}) rampung 100%!`);
           resolve();
         } else {
+          console.warn(`   ⚠️ Stream ${tier.name} exit dengan error code ${code}`);
           if (useGpu) {
-            console.warn(`   ⚠️ Stream ${tier.name} fallback ke standard encode...`);
-            const fallbackArgs = args.filter(a => a !== '-hwaccel' && a !== 'cuda');
+            console.warn(`   🔄 Menjalankan fallback CPU ultrafast untuk ${tier.name}...`);
+            const fallbackArgs = args.map(a => a === 'h264_nvenc' ? 'libx264' : a);
             const fallbackChild = spawn('ffmpeg', fallbackArgs, { cwd: outputDir });
+            fallbackChild.stderr.on('data', () => {}); // Drain
+            fallbackChild.stdout.on('data', () => {}); // Drain
             fallbackChild.on('close', fCode => {
               if (fCode === 0) {
                 console.log(`   ✅ [STREAM SELESAI] Stream ${tier.name} (fallback) rampung 100%!`);
                 resolve();
               } else {
-                reject(new Error(`FFmpeg error pada stream ${tier.name} (exit code ${fCode})`));
+                reject(new Error(`FFmpeg gagal pada stream ${tier.name} (code ${fCode}): ${stderrBuffer.slice(-500)}`));
               }
             });
+            fallbackChild.on('error', reject);
           } else {
-            reject(new Error(`FFmpeg error pada stream ${tier.name} (exit code ${code})`));
+            reject(new Error(`FFmpeg error pada stream ${tier.name} (exit code ${code}): ${stderrBuffer.slice(-500)}`));
           }
         }
       });
@@ -1015,9 +1093,18 @@ async function handleAutoIngestNyaa(options) {
     if (mode === 'hls' && hasCommand('ffmpeg')) {
       try {
         const hlsDir = path.join(workDir, 'hls');
-        const hlsBuild = await buildMultiResHlsFmp4(videoFilePath, hlsDir);
+        const hlsBuild = await buildMultiResHlsFmp4(videoFilePath, hlsDir, jobId);
 
-        for (const fileFullPath of hlsBuild.files) {
+        await reportJobProgress(jobId, { status: 'uploading', percent: 89, log: `Mengunggah file Multi-Resolution HLS ke Cloudflare R2...` });
+
+        // Sortir agar master.m3u8 diunggah paling akhir setelah segmen m4s siap
+        const sortedFiles = [...hlsBuild.files].sort((a, b) => {
+          if (a.endsWith('master.m3u8')) return 1;
+          if (b.endsWith('master.m3u8')) return -1;
+          return 0;
+        });
+
+        for (const fileFullPath of sortedFiles) {
           const fileName = path.basename(fileFullPath);
           await uploadToStorage(`${basePrefix}/${fileName}`, fileFullPath);
         }
