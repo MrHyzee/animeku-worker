@@ -800,10 +800,16 @@ async function handleAutoIngestNyaa(options) {
 
   // 2. Cari kandidat terbaik di Nyaa.si jika magnet tidak diberikan langsung
   let candidate = null;
-  if (options.magnet || options.url) {
+  let candidateMagnet = options.magnet || options.url;
+  if (candidateMagnet && candidateMagnet.includes('9ad49d790050e74ca815e1e9d4056dbbee27a52d') && epNumber !== 1) {
+    console.log(`⚠️ Magnet job terdeteksi preset generik Ep 1. Mencari rujukan torrent resmi Episode ${epNumber} secara live di Nyaa.si...`);
+    candidateMagnet = null;
+  }
+
+  if (candidateMagnet) {
     candidate = {
       title: options.title || `${anime.title} - Episode ${epNumber}`,
-      magnet: options.magnet || options.url,
+      magnet: candidateMagnet,
       type: options.batch ? 'batch' : 'single',
       resolution: '1080p',
       output_resolutions: ['1080p', '720p', '480p'],
