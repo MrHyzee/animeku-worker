@@ -1,0 +1,25 @@
+{
+  "name": "animeku-api",
+  "version": "1.0.0",
+  "description": "Backend Cloudflare Worker & D1 Database untuk Aplikasi Animeku",
+  "main": "src/index.js",
+  "scripts": {
+    "migrate": "node migrate.js",
+    "seed": "node seed_community_feed.js",
+    "seed:catalog": "node seed_multicategory.js",
+    "deploy": "node deploy.js"
+  },
+  "keywords": [
+    "cloudflare-worker",
+    "d1",
+    "animeku"
+  ],
+  "author": "AnimeKU Team",
+  "license": "ISC",
+  "dependencies": {
+    "@aws-sdk/client-s3": "^3.1178.0"
+  },
+  "devDependencies": {
+    "wrangler": "^4.168.0"
+  }
+}
