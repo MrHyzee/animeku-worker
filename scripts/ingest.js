@@ -220,7 +220,7 @@ function hasCommand(cmd) {
 let cachedNvencAvailable = null;
 function hasNvidiaNvenc() {
   if (cachedNvencAvailable !== null) return cachedNvencAvailable;
-  if (!hasCommand('ffmpeg') || !hasCommand('nvidia-smi')) {
+  if (!hasCommand('nvidia-smi')) {
     cachedNvencAvailable = false;
     return false;
   }
@@ -229,9 +229,45 @@ function hasNvidiaNvenc() {
     cachedNvencAvailable = false;
     return false;
   }
-  const enc = spawnSync('ffmpeg', ['-hide_banner', '-encoders'], { encoding: 'utf8' });
-  cachedNvencAvailable = Boolean(enc.stdout && enc.stdout.includes('h264_nvenc'));
-  return cachedNvencAvailable;
+
+  let enc = spawnSync('ffmpeg', ['-hide_banner', '-encoders'], { encoding: 'utf8' });
+  if (enc.stdout && enc.stdout.includes('h264_nvenc')) {
+    cachedNvencAvailable = true;
+    return true;
+  }
+
+  // Jika runner memiliki GPU NVIDIA tapi binary FFmpeg belum mendukung NVENC (misal di Ubuntu / Colab):
+  // Otomatis unduh & pasang pre-compiled BtbN FFmpeg NVENC Static ke /usr/local/bin!
+  if (process.platform === 'linux') {
+    try {
+      console.log('⚡ [AUTO-UPGRADE] Terdeteksi GPU NVIDIA tapi FFmpeg saat ini belum mendukung NVENC.');
+      console.log('⚡ Mengunduh & memasang BtbN FFmpeg NVENC Hardware Transcoder...');
+      execFileSync('bash', ['-c', `
+        set -e
+        mkdir -p /tmp/ffmpeg_btbn
+        cd /tmp/ffmpeg_btbn
+        wget -q -O ffmpeg.tar.xz https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-gpl.tar.xz
+        tar -xf ffmpeg.tar.xz --strip-components=1
+        sudo cp bin/ffmpeg /usr/local/bin/ffmpeg
+        sudo cp bin/ffprobe /usr/local/bin/ffprobe
+        sudo chmod +x /usr/local/bin/ffmpeg /usr/local/bin/ffprobe
+        cd /
+        rm -rf /tmp/ffmpeg_btbn
+      `], { stdio: 'inherit' });
+
+      enc = spawnSync('/usr/local/bin/ffmpeg', ['-hide_banner', '-encoders'], { encoding: 'utf8' });
+      cachedNvencAvailable = Boolean(enc.stdout && enc.stdout.includes('h264_nvenc'));
+      if (cachedNvencAvailable) {
+        console.log('✅ [AUTO-UPGRADE] FFmpeg NVENC GPU Hardware Acceleration BERHASIL DIAKTIFKAN!');
+      }
+      return cachedNvencAvailable;
+    } catch (e) {
+      console.warn('⚠️ Gagal auto-upgrade BtbN FFmpeg NVENC:', e.message);
+    }
+  }
+
+  cachedNvencAvailable = false;
+  return false;
 }
 
 // ==============================================================================
