@@ -65,6 +65,7 @@ const s3 = new S3Client({
     accessKeyId: process.env.HETZNER_ACCESS_KEY || R2_ACCESS_KEY,
     secretAccessKey: process.env.HETZNER_SECRET_KEY || R2_SECRET_KEY,
   },
+  maxAttempts: 5,
 });
 
 // ==============================================================================
@@ -166,17 +167,27 @@ async function uploadToStorage(key, bufferOrFilePath, customContentType = null) 
     }
   } else {
     // Upload via S3 API (Cloudflare R2 atau Hetzner S3 Object Storage)
-    const bodyData = isFilePath ? fs.createReadStream(bufferOrFilePath) : bufferOrFilePath;
+    // Gunakan Buffer penuh agar AWS SDK v3 dapat me-retry otomatis jika koneksi stale setelah proses transcode panjang
+    const bodyBuffer = isFilePath ? fs.readFileSync(bufferOrFilePath) : bufferOrFilePath;
     const putParams = {
       Bucket: BUCKET_NAME,
       Key: key,
-      Body: bodyData,
+      Body: bodyBuffer,
       ContentType: contentType,
     };
-    if (isFilePath) {
-      putParams.ContentLength = fs.statSync(bufferOrFilePath).size;
+
+    let attempts = 0;
+    while (attempts < 5) {
+      try {
+        attempts++;
+        await s3.send(new PutObjectCommand(putParams));
+        break;
+      } catch (err) {
+        console.warn(`⚠️ Gagal unggah ${key} (Percobaan ${attempts}/5): ${err.message}`);
+        if (attempts >= 5) throw err;
+        await new Promise(r => setTimeout(r, 2000 * attempts));
+      }
     }
-    await s3.send(new PutObjectCommand(putParams));
   }
 
   const publicUrl = `${MEDIA_BASE_URL}/${key}`;
