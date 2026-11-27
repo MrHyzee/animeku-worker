@@ -958,13 +958,14 @@ async function handleBatchSeasonRolling(options) {
 async function handleWorkerDaemon(options) {
   const runOnce = !!options.once;
   const mode = options.mode || 'hls';
-  const autoStopEnabled = (process.env.VASTAI_AUTO_STOP || 'true').toLowerCase() === 'true';
+  const workerNode = options.worker || process.env.WORKER_NODE || 'google-colab';
+  const autoStopEnabled = (process.env.VASTAI_AUTO_STOP || 'false').toLowerCase() === 'true';
   const idleTimeoutSeconds = parseInt(process.env.VASTAI_IDLE_TIMEOUT_SECONDS || '300', 10);
   const pollIntervalSeconds = 15;
   let accumulatedIdleSeconds = 0;
 
   console.log(`\n======================================================================`);
-  console.log(`🤖 VAST.AI / CLOUD INGESTION WORKER DAEMON BERJALAN`);
+  console.log(`🤖 CLOUD INGESTION WORKER DAEMON BERJALAN (${workerNode})`);
   console.log(`   Storage Driver  : ${STORAGE_DRIVER.toUpperCase()} (${MEDIA_BASE_URL})`);
   console.log(`   Transcode Mode  : ${mode.toUpperCase()} (fMP4 Single-File Byte-Range)`);
   console.log(`   Auto-Stop Policy: ${autoStopEnabled ? `AKTIF (${idleTimeoutSeconds}s / ${(idleTimeoutSeconds / 60).toFixed(1)} menit Cooldown)` : 'STANDBY (Non-stop)'}`);
@@ -973,7 +974,7 @@ async function handleWorkerDaemon(options) {
   while (true) {
     let nextJobData = null;
     try {
-      const res = await fetch(`${WORKER_BASE_URL}/api/v1/ingestion/jobs/next?worker=vastai-gpu`);
+      const res = await fetch(`${WORKER_BASE_URL}/api/v1/ingestion/jobs/next?worker=${encodeURIComponent(workerNode)}`);
       const json = await res.json();
       nextJobData = json.data;
     } catch (fetchErr) {
