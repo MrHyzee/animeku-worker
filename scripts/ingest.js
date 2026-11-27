@@ -516,7 +516,7 @@ function getVideoHeight(videoFilePath) {
   }
 }
 
-function buildMultiResHlsFmp4(videoFilePath, outputDir) {
+async function buildMultiResHlsFmp4(videoFilePath, outputDir) {
   fs.mkdirSync(outputDir, { recursive: true });
   const sourceHeight = getVideoHeight(videoFilePath);
   const useGpu = hasNvidiaNvenc();
@@ -534,63 +534,77 @@ function buildMultiResHlsFmp4(videoFilePath, outputDir) {
     activeTiers = [allTiers[allTiers.length - 1]];
   }
 
-  console.log(`🎬 Memulai Konversi Multi-Resolution HLS fMP4 Single-File (${useGpu ? 'GPU NVIDIA NVENC' : 'CPU libx264'})`);
-  console.log(`   Resolusi Sumber: ${sourceHeight}p -> Output Ladder: [${activeTiers.map(t => t.name).join(', ')}]`);
+  console.log(`🎬 Memulai Konversi Multi-Resolution HLS fMP4 (HYBRID MULTITASKING: 3 STREAM SEKALIGUS)`);
+  console.log(`   Ladder: [${activeTiers.map(t => t.name).join(', ')}] berjalan serentak memanfaatkan RAM & GPU VRAM!`);
 
   const absVideoPath = path.resolve(videoFilePath);
 
-  for (const tier of activeTiers) {
-    const playlistName = `${tier.name}.m3u8`;
-    const segmentFileName = `${tier.name}.m4s`;
+  await Promise.all(activeTiers.map(tier => {
+    return new Promise((resolve, reject) => {
+      const playlistName = `${tier.name}.m3u8`;
+      const segmentFileName = `${tier.name}.m4s`;
 
-    const inputArgs = useGpu ? ['-hwaccel', 'cuda'] : [];
-    const vCodecArgs = useGpu
-      ? ['-c:v', 'h264_nvenc', '-preset', 'p1', '-tune', 'hq', '-rc', 'vbr', '-cq', '23']
-      : ['-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '23', '-threads', '0'];
+      const inputArgs = useGpu ? ['-hwaccel', 'cuda'] : [];
+      const vCodecArgs = useGpu
+        ? ['-c:v', 'h264_nvenc', '-preset', 'p1', '-tune', 'hq', '-rc', 'vbr', '-cq', '23']
+        : ['-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '23', '-threads', '2'];
 
-    const args = [
-      '-y',
-      '-v', 'error',
-      '-stats',
-      ...inputArgs,
-      '-i', absVideoPath,
-      '-map', '0:v:0',
-      '-map', '0:a:0?',
-      '-vf', `scale=-2:${tier.height}`,
-      ...vCodecArgs,
-      '-b:v', tier.bitrate,
-      '-maxrate', tier.maxrate,
-      '-bufsize', tier.bufsize,
-      '-pix_fmt', 'yuv420p',
-      '-g', '48',
-      '-keyint_min', '48',
-      '-c:a', 'aac',
-      '-b:a', '128k',
-      '-ac', '2',
-      '-max_muxing_queue_size', '2048',
-      '-f', 'hls',
-      '-hls_time', '6',
-      '-hls_list_size', '0',
-      '-hls_segment_type', 'fmp4',
-      '-hls_flags', 'single_file',
-      '-hls_fmp4_init_filename', segmentFileName,
-      '-hls_segment_filename', segmentFileName,
-      playlistName,
-    ];
+      const args = [
+        '-y',
+        '-v', 'error',
+        ...inputArgs,
+        '-i', absVideoPath,
+        '-map', '0:v:0',
+        '-map', '0:a:0?',
+        '-vf', `scale=-2:${tier.height}`,
+        ...vCodecArgs,
+        '-b:v', tier.bitrate,
+        '-maxrate', tier.maxrate,
+        '-bufsize', tier.bufsize,
+        '-pix_fmt', 'yuv420p',
+        '-g', '48',
+        '-keyint_min', '48',
+        '-c:a', 'aac',
+        '-b:a', '128k',
+        '-ac', '2',
+        '-max_muxing_queue_size', '2048',
+        '-f', 'hls',
+        '-hls_time', '6',
+        '-hls_list_size', '0',
+        '-hls_segment_type', 'fmp4',
+        '-hls_flags', 'single_file',
+        '-hls_fmp4_init_filename', segmentFileName,
+        '-hls_segment_filename', segmentFileName,
+        playlistName,
+      ];
 
-    console.log(`\n   ⚙️  [NVENC TURBO] Merender stream ${tier.name} (${segmentFileName})...`);
-    try {
-      execFileSync('ffmpeg', args, { cwd: outputDir, stdio: 'inherit' });
-    } catch (encErr) {
-      if (useGpu) {
-        console.warn(`⚠️ Render GPU dengan -hwaccel cuda terkendala (${encErr.message}). Otomatis fallback ke CPU decode + NVENC encode...`);
-        const fallbackArgs = args.filter(a => a !== '-hwaccel' && a !== 'cuda');
-        execFileSync('ffmpeg', fallbackArgs, { cwd: outputDir, stdio: 'inherit' });
-      } else {
-        throw encErr;
-      }
-    }
-  }
+      console.log(`   🚀 [SPAWN PARALEL] Stream ${tier.name} aktif merender bersamaan...`);
+      const child = spawn('ffmpeg', args, { cwd: outputDir });
+      child.on('close', code => {
+        if (code === 0) {
+          console.log(`   ✅ [STREAM SELESAI] Stream ${tier.name} (${segmentFileName}) rampung 100%!`);
+          resolve();
+        } else {
+          if (useGpu) {
+            console.warn(`   ⚠️ Stream ${tier.name} fallback ke standard encode...`);
+            const fallbackArgs = args.filter(a => a !== '-hwaccel' && a !== 'cuda');
+            const fallbackChild = spawn('ffmpeg', fallbackArgs, { cwd: outputDir });
+            fallbackChild.on('close', fCode => {
+              if (fCode === 0) {
+                console.log(`   ✅ [STREAM SELESAI] Stream ${tier.name} (fallback) rampung 100%!`);
+                resolve();
+              } else {
+                reject(new Error(`FFmpeg error pada stream ${tier.name} (exit code ${fCode})`));
+              }
+            });
+          } else {
+            reject(new Error(`FFmpeg error pada stream ${tier.name} (exit code ${code})`));
+          }
+        }
+      });
+      child.on('error', reject);
+    });
+  }));
 
   // Bangun Master Playlist (master.m3u8)
   const masterLines = ['#EXTM3U', '#EXT-X-VERSION:7'];
@@ -1001,7 +1015,7 @@ async function handleAutoIngestNyaa(options) {
     if (mode === 'hls' && hasCommand('ffmpeg')) {
       try {
         const hlsDir = path.join(workDir, 'hls');
-        const hlsBuild = buildMultiResHlsFmp4(videoFilePath, hlsDir);
+        const hlsBuild = await buildMultiResHlsFmp4(videoFilePath, hlsDir);
 
         for (const fileFullPath of hlsBuild.files) {
           const fileName = path.basename(fileFullPath);
