@@ -1,0 +1,114 @@
+name: Ingest Anime Episode (Nyaa.si -> Multi-Res HLS & Smart Sub Indo -> R2 / Hetzner)
+
+on:
+  workflow_dispatch:
+    inputs:
+      anime_slug:
+        description: 'Slug Anime (misal: solo-leveling, frieren, renegade-immortal)'
+        required: true
+        type: string
+      episode_number:
+        description: 'Nomor Episode (misal: 1, 2, 3) atau Range Batch (misal: 1-12)'
+        required: true
+        type: string
+      mode:
+        description: 'Mode Output Video (direct = File MKV/MP4 utuh tercepat | hls = Multi-Res fMP4)'
+        required: true
+        default: 'direct'
+        type: choice
+        options:
+          - direct
+          - hls
+      storage_driver:
+        description: 'Driver Penyimpanan Target (r2 = Cloudflare R2 Testing | hetzner = Hetzner Production)'
+        required: true
+        default: 'r2'
+        type: choice
+        options:
+          - r2
+          - hetzner
+      download_url:
+        description: 'Opsional: Link Magnet / Direct URL (Kosongkan agar otomatis dicari di Nyaa.si)'
+        required: false
+        type: string
+
+  repository_dispatch:
+    types: [ingest-episode, auto-ingest]
+
+jobs:
+  ingest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 20 with npm Cache
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: package-lock.json
+
+      - name: Cache Node Modules
+        uses: actions/cache@v4
+        id: node-cache
+        with:
+          path: node_modules
+          key: ${{ runner.os }}-node-modules-${{ hashFiles('package-lock.json') }}
+          restore-keys: |
+            ${{ runner.os }}-node-modules-
+
+      - name: Install System Tools (aria2, rclone)
+        run: |
+          echo "🔍 Memeriksa ketersediaan tools bawaan runner..."
+          if ! command -v aria2c &> /dev/null || ! command -v rclone &> /dev/null; then
+            echo "📦 Menginstal aria2 dan rclone (tanpa redudansi ffmpeg)..."
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq --no-install-recommends aria2 rclone
+          fi
+          echo "✅ ffmpeg: $(ffmpeg -version | head -n 1)"
+          echo "✅ aria2c: $(aria2c -v | head -n 1)"
+          echo "✅ rclone: $(rclone --version | head -n 1)"
+
+      - name: Install Dependencies
+        if: steps.node-cache.outputs.cache-hit != 'true'
+        run: |
+          echo "📦 Cache miss: Melakukan instalasi cepat npm ci..."
+          npm ci --prefer-offline --no-audit --no-fund
+
+      - name: Verify Dependencies
+        if: steps.node-cache.outputs.cache-hit == 'true'
+        run: echo "⚡ Cache hit! Node modules langsung dipakai tanpa install ulang."
+
+      - name: Run Smart Ingestion Pipeline
+        env:
+          STORAGE_DRIVER: ${{ github.event.client_payload.storage_driver || inputs.storage_driver || 'r2' }}
+          CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+          CF_DATABASE_ID: ${{ secrets.CF_DATABASE_ID }}
+          CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          R2_ACCESS_KEY: ${{ secrets.R2_ACCESS_KEY }}
+          R2_SECRET_KEY: ${{ secrets.R2_SECRET_KEY }}
+          R2_BUCKET_NAME: ${{ secrets.R2_BUCKET_NAME || 'animekuapp-media' }}
+          GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS || '' }}
+          MEDIA_BASE_URL: ${{ secrets.MEDIA_BASE_URL || '' }}
+        run: |
+          SLUG="${{ github.event.client_payload.anime_slug || inputs.anime_slug }}"
+          EP_INPUT="${{ github.event.client_payload.episode_number || inputs.episode_number }}"
+          MODE_INPUT="${{ github.event.client_payload.mode || inputs.mode || 'direct' }}"
+          URL_INPUT="${{ github.event.client_payload.download_url || inputs.download_url }}"
+
+          echo "🚀 Memulai Ingestion AnimeKu di GitHub Actions (Public Unlimited):"
+          echo "   Slug: $SLUG"
+          echo "   Episode: $EP_INPUT"
+          echo "   Mode: $MODE_INPUT"
+          echo "   Driver: $STORAGE_DRIVER"
+
+          if [[ "$EP_INPUT" == *"-"* ]]; then
+            node scripts/ingest.js batch-season --anime "$SLUG" --range "$EP_INPUT" --mode "$MODE_INPUT"
+          elif [ -n "$URL_INPUT" ]; then
+            node scripts/ingest.js auto-ingest --anime "$SLUG" --ep "$EP_INPUT" --magnet "$URL_INPUT" --mode "$MODE_INPUT"
+          else
+            node scripts/ingest.js auto-ingest --anime "$SLUG" --ep "$EP_INPUT" --mode "$MODE_INPUT"
+          fi
