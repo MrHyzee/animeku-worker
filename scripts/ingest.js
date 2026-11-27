@@ -141,16 +141,23 @@ function getContentTypeByExt(key) {
 async function uploadToStorage(key, bufferOrFilePath, customContentType = null) {
   const contentType = customContentType || getContentTypeByExt(key);
   const isFilePath = typeof bufferOrFilePath === 'string';
-  const bodyBuffer = isFilePath ? fs.readFileSync(bufferOrFilePath) : bufferOrFilePath;
 
-  console.log(`☁️  [${STORAGE_DRIVER.toUpperCase()}] Mengunggah -> ${key} (${(bodyBuffer.length / 1024).toFixed(1)} KB)...`);
+  let fileSizeStr = '';
+  if (isFilePath) {
+    const stat = fs.statSync(bufferOrFilePath);
+    fileSizeStr = `${(stat.size / (1024 * 1024)).toFixed(2)} MB`;
+  } else {
+    fileSizeStr = `${(bufferOrFilePath.length / 1024).toFixed(1)} KB`;
+  }
+
+  console.log(`☁️  [${STORAGE_DRIVER.toUpperCase()}] Mengunggah -> ${key} (${fileSizeStr})...`);
 
   if (STORAGE_DRIVER === 'hetzner' && !HETZNER_S3_ENDPOINT) {
     // Upload ke Hetzner Storage Box via rclone (SFTP / WebDAV)
     let tmpFile = isFilePath ? bufferOrFilePath : null;
     if (!tmpFile) {
       tmpFile = path.join(os.tmpdir(), `animeku_upload_${Date.now()}_${path.basename(key)}`);
-      fs.writeFileSync(tmpFile, bodyBuffer);
+      fs.writeFileSync(tmpFile, bufferOrFilePath);
     }
     try {
       execFileSync('rclone', ['copyto', tmpFile, `${HETZNER_RCLONE_REMOTE}/${key}`], { stdio: 'inherit' });
@@ -159,12 +166,17 @@ async function uploadToStorage(key, bufferOrFilePath, customContentType = null) 
     }
   } else {
     // Upload via S3 API (Cloudflare R2 atau Hetzner S3 Object Storage)
-    await s3.send(new PutObjectCommand({
+    const bodyData = isFilePath ? fs.createReadStream(bufferOrFilePath) : bufferOrFilePath;
+    const putParams = {
       Bucket: BUCKET_NAME,
       Key: key,
-      Body: bodyBuffer,
+      Body: bodyData,
       ContentType: contentType,
-    }));
+    };
+    if (isFilePath) {
+      putParams.ContentLength = fs.statSync(bufferOrFilePath).size;
+    }
+    await s3.send(new PutObjectCommand(putParams));
   }
 
   const publicUrl = `${MEDIA_BASE_URL}/${key}`;
@@ -388,18 +400,19 @@ function buildMultiResHlsFmp4(videoFilePath, outputDir) {
   console.log(`🎬 Memulai Konversi Multi-Resolution HLS fMP4 Single-File (${useGpu ? 'GPU NVIDIA NVENC' : 'CPU libx264'})`);
   console.log(`   Resolusi Sumber: ${sourceHeight}p -> Output Ladder: [${activeTiers.map(t => t.name).join(', ')}]`);
 
+  const absVideoPath = path.resolve(videoFilePath);
+
   for (const tier of activeTiers) {
     const playlistName = `${tier.name}.m3u8`;
     const segmentFileName = `${tier.name}.m4s`;
-    const playlistPath = path.join(outputDir, playlistName);
 
     const vCodecArgs = useGpu
       ? ['-c:v', 'h264_nvenc', '-preset', 'p4', '-rc', 'vbr', '-cq', '23']
-      : ['-c:v', 'libx264', '-preset', 'veryfast', '-crf', '23'];
+      : ['-c:v', 'libx264', '-preset', 'veryfast', '-crf', '23', '-threads', '0'];
 
     const args = [
       '-y', '-v', 'warning',
-      '-i', videoFilePath,
+      '-i', absVideoPath,
       '-map', '0:v:0',
       '-map', '0:a:0?',
       '-vf', `scale=-2:${tier.height}`,
@@ -423,11 +436,11 @@ function buildMultiResHlsFmp4(videoFilePath, outputDir) {
       '-hls_flags', 'single_file',
       '-hls_fmp4_init_filename', segmentFileName,
       '-hls_segment_filename', segmentFileName,
-      playlistPath,
+      playlistName,
     ];
 
     console.log(`   ⚙️  Merender stream ${tier.name} (${segmentFileName})...`);
-    execFileSync('ffmpeg', args, { stdio: 'inherit' });
+    execFileSync('ffmpeg', args, { cwd: outputDir, stdio: 'inherit' });
   }
 
   // Bangun Master Playlist (master.m3u8)
@@ -443,10 +456,17 @@ function buildMultiResHlsFmp4(videoFilePath, outputDir) {
   fs.writeFileSync(masterPath, masterLines.join('\n') + '\n', 'utf8');
   console.log(`✅ Master HLS Playlist siap: ${masterPath}`);
 
+  const outputFiles = fs.readdirSync(outputDir).map(f => path.join(outputDir, f));
+  console.log(`📋 File HLS yang dihasilkan (${outputFiles.length} file):`);
+  outputFiles.forEach(f => {
+    const s = fs.statSync(f);
+    console.log(`   • ${path.basename(f)} (${(s.size / (1024 * 1024)).toFixed(2)} MB)`);
+  });
+
   return {
     masterPath,
     tiers: activeTiers.map(t => t.name),
-    files: fs.readdirSync(outputDir).map(f => path.join(outputDir, f)),
+    files: outputFiles,
   };
 }
 
