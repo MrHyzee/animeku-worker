@@ -17,7 +17,7 @@
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
-const { execFileSync, spawnSync } = require('child_process');
+const { execFileSync, spawnSync, spawn } = require('child_process');
 const { S3Client, PutObjectCommand } = require('@aws-sdk/client-s3');
 const {
   translateSubtitleContent,
