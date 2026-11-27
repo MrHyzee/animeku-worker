@@ -1024,7 +1024,8 @@ async function handleWorkerDaemon(options) {
           break;
         }
       } else {
-        console.log(`ℹ️  Antrean kosong. Menunggu ${pollIntervalSeconds} detik untuk job baru...`);
+        const now = new Date().toLocaleTimeString('id-ID');
+        console.log(`[${now}] ⏳ Antrean kosong. Colab Daemon Standby (GPU T4 Siap). Cek antrean lagi dalam ${pollIntervalSeconds}s...`);
       }
 
       await new Promise(r => setTimeout(r, pollIntervalSeconds * 1000));
@@ -1035,9 +1036,11 @@ async function handleWorkerDaemon(options) {
     accumulatedIdleSeconds = 0;
     const job = nextJobData;
 
-    console.log(`\n⚡ MENERIMA JOB [${job.id}]: ${job.anime_title || job.anime_slug} - Episode ${job.episode_number}`);
-    console.log(`   Sumber: [${job.source_provider || 'nyaa'}] ${job.source_title || '-'}`);
-    console.log(`   Status: Mengunci job dan memulai pemrosesan video + subtitle...`);
+    console.log(`\n======================================================================`);
+    console.log(`🔥 [JOB MASUK DARI ADMIN] [${job.id}]: ${job.anime_title || job.anime_slug} - Episode ${job.episode_number}`);
+    console.log(`   Sumber : [${job.source_provider || 'nyaa'}] ${job.source_title || '-'}`);
+    console.log(`   Status : Mengunci job dan memulai pemrosesan video + subtitle...`);
+    console.log(`======================================================================\n`);
 
     try {
       await handleAutoIngestNyaa({
@@ -1048,9 +1051,10 @@ async function handleWorkerDaemon(options) {
         mode,
         job_id: job.id,
       });
-      console.log(`✅ Job [${job.id}] SELESAI DENGAN SUKSES! Memeriksa apakah ada antrean baru yang ditambahkan...`);
+      console.log(`\n🎉 Job [${job.id}] SELESAI DENGAN SUKSES!`);
+      console.log(`🔄 Kembali ke mode standby mendengarkan antrean berikutnya...\n`);
     } catch (err) {
-      console.error(`❌ Job [${job.id}] GAGAL:`, err.message);
+      console.error(`\n❌ Job [${job.id}] GAGAL:`, err.message);
       try {
         await fetch(`${WORKER_BASE_URL}/api/v1/ingestion/jobs/${job.id}`, {
           method: 'PATCH',
@@ -1061,6 +1065,7 @@ async function handleWorkerDaemon(options) {
           }),
         });
       } catch (_) {}
+      console.log(`🔄 Kembali ke mode standby mendengarkan antrean berikutnya...\n`);
     }
 
     if (runOnce) break;
