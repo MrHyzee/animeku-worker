@@ -433,7 +433,7 @@ function buildMultiResHlsFmp4(videoFilePath, outputDir) {
 
     const vCodecArgs = useGpu
       ? ['-c:v', 'h264_nvenc', '-preset', 'p4', '-rc', 'vbr', '-cq', '23']
-      : ['-c:v', 'libx264', '-preset', 'veryfast', '-crf', '23', '-threads', '0'];
+      : ['-c:v', 'libx264', '-preset', 'veryfast', '-tune', 'fastdecode', '-crf', '23', '-threads', '0'];
 
     const args = [
       '-y', '-v', 'warning',
@@ -829,17 +829,24 @@ async function handleAutoIngestNyaa(options) {
 
     await reportJobProgress(jobId, { status: mode === 'hls' ? 'transcoding' : 'uploading', percent: 75, log: `Memproses encoding video (${mode.toUpperCase()})...` });
 
-    // 6. Konversi Multi-Resolution HLS fMP4 Single-File atau Direct Upload
+    // 6. Konversi Multi-Resolution HLS fMP4 Single-File atau Direct Upload (Dengan Circuit-Breaker Fallback)
     let streamUrl = '';
     if (mode === 'hls' && hasCommand('ffmpeg')) {
-      const hlsDir = path.join(workDir, 'hls');
-      const hlsBuild = buildMultiResHlsFmp4(videoFilePath, hlsDir);
+      try {
+        const hlsDir = path.join(workDir, 'hls');
+        const hlsBuild = buildMultiResHlsFmp4(videoFilePath, hlsDir);
 
-      for (const fileFullPath of hlsBuild.files) {
-        const fileName = path.basename(fileFullPath);
-        await uploadToStorage(`${basePrefix}/${fileName}`, fileFullPath);
+        for (const fileFullPath of hlsBuild.files) {
+          const fileName = path.basename(fileFullPath);
+          await uploadToStorage(`${basePrefix}/${fileName}`, fileFullPath);
+        }
+        streamUrl = `${MEDIA_BASE_URL}/${basePrefix}/master.m3u8`;
+      } catch (hlsErr) {
+        console.warn(`⚠️ HLS transcoding gagal (${hlsErr.message}). Mengaktifkan circuit-breaker fallback ke Direct MKV/MP4...`);
+        const ext = path.extname(videoFilePath).replace('.', '') || 'mkv';
+        const videoKey = `${basePrefix}/video.${ext}`;
+        streamUrl = await uploadToStorage(videoKey, videoFilePath);
       }
-      streamUrl = `${MEDIA_BASE_URL}/${basePrefix}/master.m3u8`;
     } else {
       const ext = path.extname(videoFilePath).replace('.', '') || 'mkv';
       const videoKey = `${basePrefix}/video.${ext}`;
