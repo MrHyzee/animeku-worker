@@ -682,20 +682,58 @@ function downloadFromNyaaWithAria2(magnetOrUrl, { isBatch = false, targetEpNumbe
     }
 
     if (!isBatch) {
-      console.log(`⬇️  Mengunduh Single Episode via aria2c (16-thread + tracker opt)...`);
+      console.log(`⬇️  Mengunduh Single Episode via aria2c (TCP Tracker Booster + Direct Torrent)...`);
+      
+      let targetFileOrMagnet = magnetOrUrl;
+      const hashMatch = magnetOrUrl.match(/urn:btih:([a-fA-F0-9]{40})/i);
+      if (hashMatch) {
+        const infoHash = hashMatch[1].toUpperCase();
+        const torrentCachePath = path.join(downloadDir, `${infoHash}.torrent`);
+        if (!fs.existsSync(torrentCachePath)) {
+          console.log(`⚡ Mengunduh file .torrent resmi untuk bypass limit DHT Google Colab...`);
+          try {
+            execFileSync('curl', [
+              '-sL',
+              '-A', 'Mozilla/5.0',
+              '--max-time', '10',
+              `https://itorrents.org/torrent/${infoHash}.torrent`,
+              '-o', torrentCachePath
+            ]);
+            if (fs.existsSync(torrentCachePath) && fs.statSync(torrentCachePath).size > 200) {
+              console.log(`✅ File .torrent resmi didapatkan (${(fs.statSync(torrentCachePath).size / 1024).toFixed(1)} KB)! Memulai download langsung...`);
+              targetFileOrMagnet = torrentCachePath;
+            }
+          } catch (_) {}
+        } else {
+          targetFileOrMagnet = torrentCachePath;
+        }
+      }
+
+      const tcpTrackers = [
+        'http://nyaa.tracker.wf:7777/announce',
+        'http://tracker.opentrackr.org:1337/announce',
+        'http://p4p.arenabg.com:1337/announce',
+        'http://open.acgnxtracker.com:80/announce',
+        'https://tracker.tamersunion.org:443/announce',
+        'http://tracker.rensite.net:80/announce',
+        'http://tracker.files.fm:6969/announce'
+      ].join(',');
+
       execFileSync('aria2c', [
         '-d', downloadDir,
         '-x', '16',
         '-s', '16',
         '-j', '16',
         '--seed-time=0',
-        '--summary-interval=5',
-        '--bt-stop-timeout=300',
-        '--bt-tracker-connect-timeout=10',
-        '--bt-tracker-timeout=15',
+        '--summary-interval=3',
+        '--file-allocation=none',
+        '--bt-stop-timeout=120',
+        '--bt-tracker-connect-timeout=5',
+        '--bt-tracker-timeout=10',
+        '--bt-tracker=' + tcpTrackers,
         '--enable-dht=true',
-        '--dht-listen-port=6881',
-        magnetOrUrl,
+        '--bt-save-metadata=true',
+        targetFileOrMagnet,
       ], { stdio: 'inherit' });
     } else {
       console.log(`📦 Sumber bertipe BATCH! Mengambil metadata daftar file terlebih dahulu (--bt-metadata-only)...`);
