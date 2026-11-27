@@ -188,8 +188,22 @@ async function uploadToStorage(key, bufferOrFilePath, customContentType = null) 
 // DETEKSI TOOLS EKSTERNAL (FFMPEG, FFPROBE, ARIA2C, GPU NVENC)
 // ==============================================================================
 function hasCommand(cmd) {
-  const res = spawnSync('which', [cmd], { encoding: 'utf8' });
-  return res.status === 0;
+  let res = spawnSync('which', [cmd], { encoding: 'utf8' });
+  if (res.status === 0) return true;
+
+  // Auto-install ffmpeg & ffprobe jika di Linux runner (GitHub Actions / Vast.ai)
+  if ((cmd === 'ffmpeg' || cmd === 'ffprobe') && process.platform === 'linux') {
+    try {
+      console.log(`📦 [AUTO-INSTALL] ${cmd} tidak ditemukan, memasang via apt-get...`);
+      execFileSync('sudo', ['apt-get', 'update', '-qq'], { stdio: 'inherit' });
+      execFileSync('sudo', ['apt-get', 'install', '-y', '-qq', 'ffmpeg'], { stdio: 'inherit' });
+      res = spawnSync('which', [cmd], { encoding: 'utf8' });
+      return res.status === 0;
+    } catch (_) {
+      return false;
+    }
+  }
+  return false;
 }
 
 let cachedNvencAvailable = null;
