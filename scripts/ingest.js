@@ -781,8 +781,8 @@ async function handleAutoIngestNyaa(options) {
   const jobId = options['job-id'] || options.jobId || process.env.JOB_ID || null;
 
   if (!animeSlug) {
-    console.error('❌ Parameter --anime <slug> wajib diisi! Contoh: node backend/scripts/ingest.js auto-ingest --anime solo-leveling --ep 1');
-    process.exit(1);
+    console.log('🤖 Parameter --anime kosong. Mengalihkan otomatis ke Worker Daemon untuk mengklaim job dari Admin Panel...');
+    return handleWorkerDaemon({ once: true, ...options });
   }
 
   // 1. Cari anime di D1
@@ -1001,6 +1001,8 @@ async function handleWorkerDaemon(options) {
   const runOnce = !!options.once;
   const mode = options.mode || 'hls';
   const workerNode = options.worker || process.env.WORKER_NODE || 'google-colab';
+  const targetJobId = options.job || options['job-id'] || process.env.JOB_ID || null;
+  const specificSlug = options.anime || options.slug || null;
   const autoStopEnabled = (process.env.VASTAI_AUTO_STOP || 'false').toLowerCase() === 'true';
   const idleTimeoutSeconds = parseInt(process.env.VASTAI_IDLE_TIMEOUT_SECONDS || '300', 10);
   const pollIntervalSeconds = 15;
@@ -1010,13 +1012,20 @@ async function handleWorkerDaemon(options) {
   console.log(`🤖 CLOUD INGESTION WORKER DAEMON BERJALAN (${workerNode})`);
   console.log(`   Storage Driver  : ${STORAGE_DRIVER.toUpperCase()} (${MEDIA_BASE_URL})`);
   console.log(`   Transcode Mode  : ${mode.toUpperCase()} (fMP4 Single-File Byte-Range)`);
+  if (targetJobId) console.log(`   Specific Job ID : ${targetJobId}`);
+  if (specificSlug) console.log(`   Filter Slug     : ${specificSlug}`);
   console.log(`   Auto-Stop Policy: ${autoStopEnabled ? `AKTIF (${idleTimeoutSeconds}s / ${(idleTimeoutSeconds / 60).toFixed(1)} menit Cooldown)` : 'STANDBY (Non-stop)'}`);
   console.log(`======================================================================\n`);
 
   while (true) {
     let nextJobData = null;
     try {
-      const res = await fetch(`${WORKER_BASE_URL}/api/v1/ingestion/jobs/next?worker=${encodeURIComponent(workerNode)}`);
+      const url = new URL(`${WORKER_BASE_URL}/api/v1/ingestion/jobs/next`);
+      url.searchParams.set('worker', workerNode);
+      if (targetJobId) url.searchParams.set('job_id', targetJobId);
+      if (specificSlug) url.searchParams.set('anime', specificSlug);
+
+      const res = await fetch(url.toString());
       const json = await res.json();
       nextJobData = json.data;
     } catch (fetchErr) {
