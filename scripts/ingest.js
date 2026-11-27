@@ -579,7 +579,17 @@ function buildMultiResHlsFmp4(videoFilePath, outputDir) {
     ];
 
     console.log(`\n   ⚙️  [NVENC TURBO] Merender stream ${tier.name} (${segmentFileName})...`);
-    execFileSync('ffmpeg', args, { cwd: outputDir, stdio: 'inherit' });
+    try {
+      execFileSync('ffmpeg', args, { cwd: outputDir, stdio: 'inherit' });
+    } catch (encErr) {
+      if (useGpu) {
+        console.warn(`⚠️ Render GPU dengan -hwaccel cuda terkendala (${encErr.message}). Otomatis fallback ke CPU decode + NVENC encode...`);
+        const fallbackArgs = args.filter(a => a !== '-hwaccel' && a !== 'cuda');
+        execFileSync('ffmpeg', fallbackArgs, { cwd: outputDir, stdio: 'inherit' });
+      } else {
+        throw encErr;
+      }
+    }
   }
 
   // Bangun Master Playlist (master.m3u8)
