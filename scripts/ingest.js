@@ -72,19 +72,92 @@ const s3 = new S3Client({
 // HELPER DATABASE D1 & STORAGE ADAPTER
 // ==============================================================================
 async function executeD1Query(sql, params = []) {
-  const res = await fetch(`https://api.cloudflare.com/client/v4/accounts/${ACCOUNT_ID}/d1/database/${DATABASE_ID}/query`, {
-    method: 'POST',
-    headers: {
-      'Authorization': `Bearer ${API_TOKEN}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({ sql, params }),
-  });
-  const data = await res.json();
-  if (!data.success) {
-    throw new Error(`D1 Query Error: ${JSON.stringify(data.errors)}`);
+  if (!API_TOKEN) {
+    return [];
   }
-  return data.result?.[0]?.results || [];
+  try {
+    const res = await fetch(`https://api.cloudflare.com/client/v4/accounts/${ACCOUNT_ID}/d1/database/${DATABASE_ID}/query`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${API_TOKEN}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ sql, params }),
+    });
+    const data = await res.json();
+    if (!data.success) {
+      console.warn(`⚠️ D1 Query Warning: ${JSON.stringify(data.errors || data.messages)}`);
+      return [];
+    }
+    return data.result?.[0]?.results || [];
+  } catch (err) {
+    console.warn(`⚠️ D1 Query Network Warning: ${err.message}`);
+    return [];
+  }
+}
+
+async function getAnimeDetails(slugOrId, options = {}) {
+  // 1. Jika jobData sudah disertakan dari worker daemon (/next)
+  if (options.jobData && options.jobData.anime_title) {
+    const j = options.jobData;
+    return {
+      id: j.anime_id || j.anime_slug || slugOrId,
+      title: j.anime_title,
+      title_japanese: j.title_japanese || j.anime_title,
+      slug: j.anime_slug || slugOrId,
+      category: j.category || 'anime',
+      genres: Array.isArray(j.anime_genres) ? JSON.stringify(j.anime_genres) : (j.anime_genres || '[]'),
+      poster_url: j.poster_url || '',
+      banner_url: j.banner_url || '',
+    };
+  }
+
+  // 2. Jika animeData eksplisit disertakan
+  if (options.animeData && options.animeData.title) {
+    return options.animeData;
+  }
+
+  // 3. Ambil dari Worker API (Bebas Token API Cloudflare)
+  try {
+    const res = await fetch(`${WORKER_BASE_URL}/api/v1/anime/${encodeURIComponent(slugOrId)}`);
+    const json = await res.json();
+    if (json.success && json.data) {
+      const a = json.data;
+      return {
+        id: a.id || a.slug || slugOrId,
+        title: a.title,
+        title_japanese: a.title_japanese || a.title,
+        slug: a.slug || slugOrId,
+        category: a.category || 'anime',
+        genres: Array.isArray(a.genres) ? JSON.stringify(a.genres) : (a.genres || '[]'),
+        poster_url: a.poster_url || '',
+        banner_url: a.banner_url || '',
+      };
+    }
+  } catch (_) {}
+
+  // 4. Fallback ke query D1 langsung jika API_TOKEN tersedia
+  if (API_TOKEN) {
+    try {
+      const rows = await executeD1Query(
+        'SELECT id, title, title_japanese, slug, category, genres, poster_url, banner_url FROM animes WHERE slug = ? OR id = ?',
+        [slugOrId, slugOrId]
+      );
+      if (rows && rows.length > 0) return rows[0];
+    } catch (_) {}
+  }
+
+  // 5. Default fallback objek
+  return {
+    id: slugOrId,
+    title: slugOrId,
+    title_japanese: slugOrId,
+    slug: slugOrId,
+    category: 'anime',
+    genres: '[]',
+    poster_url: '',
+    banner_url: '',
+  };
 }
 
 async function reportJobProgress(jobId, { status, percent, log = null, streamUrl = null, subIndoUrl = null }) {
@@ -785,15 +858,14 @@ async function handleAutoIngestNyaa(options) {
     return handleWorkerDaemon({ once: true, ...options });
   }
 
-  // 1. Cari anime di D1
-  const animes = await executeD1Query('SELECT id, title, title_japanese, slug, category, genres, poster_url, banner_url FROM animes WHERE slug = ? OR id = ?', [animeSlug, animeSlug]);
-  if (!animes.length) {
-    console.error(`❌ Anime "${animeSlug}" tidak ditemukan di database D1!`);
-    process.exit(1);
-  }
-  const anime = animes[0];
+  // 1. Dapatkan metadata anime (prioritas: jobData -> Worker API -> D1 query)
+  const anime = await getAnimeDetails(animeSlug, options);
   const genres = (() => {
-    try { return JSON.parse(anime.genres || '[]'); } catch { return []; }
+    try {
+      return typeof anime.genres === 'string' ? JSON.parse(anime.genres || '[]') : (anime.genres || []);
+    } catch {
+      return [];
+    }
   })();
 
   await reportJobProgress(jobId, { status: 'downloading', percent: 10, log: `Memulai download episode ${epNumber} untuk ${anime.title}` });
@@ -1101,6 +1173,7 @@ async function handleWorkerDaemon(options) {
         batch: job.source_type === 'batch',
         mode,
         job_id: job.id,
+        jobData: job,
       });
       console.log(`\n🎉 Job [${job.id}] SELESAI DENGAN SUKSES!`);
       console.log(`🔄 Kembali ke mode standby mendengarkan antrean berikutnya...\n`);
