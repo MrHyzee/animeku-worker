@@ -757,15 +757,16 @@ async function handleAutoIngestNyaa(options) {
 
     await reportJobProgress(jobId, { status: 'uploading', percent: 65, log: `Mengunggah subtitle ke ${STORAGE_DRIVER.toUpperCase()}...` });
 
-    // 5. Upload Subtitle (.id.ass & .en.ass) ke Storage
+    // 5. Upload Subtitle (.id.ass & .en.ass) ke Storage (Standarisasi: Di dalam folder episode)
+    const basePrefix = `${anime.category}/${anime.slug}/ep-${epNumber}`;
     let subIndoUrl = null;
     const availableSubs = ['id'];
     if (subResult.subIndoPath && fs.existsSync(subResult.subIndoPath)) {
-      const subIndoKey = `subtitles/${anime.category}/${anime.slug}/ep-${epNumber}.id.ass`;
+      const subIndoKey = `${basePrefix}/sub.id.ass`;
       subIndoUrl = await uploadToStorage(subIndoKey, subResult.subIndoPath);
     }
     if (subResult.subEngPath && fs.existsSync(subResult.subEngPath)) {
-      const subEngKey = `subtitles/${anime.category}/${anime.slug}/ep-${epNumber}.en.ass`;
+      const subEngKey = `${basePrefix}/sub.en.ass`;
       await uploadToStorage(subEngKey, subResult.subEngPath);
       availableSubs.push('en');
     }
@@ -777,7 +778,6 @@ async function handleAutoIngestNyaa(options) {
     if (mode === 'hls' && hasCommand('ffmpeg')) {
       const hlsDir = path.join(workDir, 'hls');
       const hlsBuild = buildMultiResHlsFmp4(videoFilePath, hlsDir);
-      const basePrefix = `${anime.category}/${anime.slug}/ep-${epNumber}`;
 
       for (const fileFullPath of hlsBuild.files) {
         const fileName = path.basename(fileFullPath);
@@ -786,7 +786,7 @@ async function handleAutoIngestNyaa(options) {
       streamUrl = `${MEDIA_BASE_URL}/${basePrefix}/master.m3u8`;
     } else {
       const ext = path.extname(videoFilePath).replace('.', '') || 'mkv';
-      const videoKey = `${anime.category}/${anime.slug}/ep-${epNumber}.${ext}`;
+      const videoKey = `${basePrefix}/video.${ext}`;
       streamUrl = await uploadToStorage(videoKey, videoFilePath);
     }
 
@@ -1042,7 +1042,8 @@ async function handleIngestEpisode(options) {
   if (videoSource) {
     if (videoSource.endsWith('.mkv')) ext = 'mkv';
     else if (videoSource.endsWith('.webm')) ext = 'webm';
-    const videoKey = `${category}/${anime.slug}/ep-${epNumber}.${ext}`;
+    const basePrefix = `${category}/${anime.slug}/ep-${epNumber}`;
+    const videoKey = `${basePrefix}/video.${ext}`;
 
     if (isDryRun) {
       console.log(`[DRY-RUN] Akan mengunggah video ke Storage key: ${videoKey}`);
@@ -1052,7 +1053,8 @@ async function handleIngestEpisode(options) {
       r2VideoUrl = await uploadToStorage(videoKey, videoBuffer);
     }
   } else {
-    const videoKey = `${category}/${anime.slug}/ep-${epNumber}.${ext}`;
+    const basePrefix = `${category}/${anime.slug}/ep-${epNumber}`;
+    const videoKey = `${basePrefix}/video.${ext}`;
     r2VideoUrl = `${MEDIA_BASE_URL}/${videoKey}`;
     console.log(`ℹ️  Menggunakan path standar Storage: ${r2VideoUrl}`);
   }
@@ -1062,7 +1064,8 @@ async function handleIngestEpisode(options) {
 
   if (subSource) {
     const subExt = subSource.endsWith('.srt') ? 'srt' : 'ass';
-    const subKey = `subtitles/${category}/${anime.slug}/ep-${epNumber}.id.${subExt}`;
+    const basePrefix = `${category}/${anime.slug}/ep-${epNumber}`;
+    const subKey = `${basePrefix}/sub.id.${subExt}`;
 
     if (isDryRun) {
       console.log(`[DRY-RUN] Akan mengunggah subtitle ke Storage key: ${subKey}`);
@@ -1140,7 +1143,8 @@ async function handleInjectSubtitle(options) {
     subBuffer = Buffer.from(translated.content, 'utf8');
   }
 
-  const subKey = `subtitles/${category}/${anime.slug}/ep-${epNumber}.id.ass`;
+  const basePrefix = `${category}/${anime.slug}/ep-${epNumber}`;
+  const subKey = `${basePrefix}/sub.id.ass`;
   const r2SubUrl = await uploadToStorage(subKey, subBuffer);
 
   const episodeId = `${anime.id}-ep-${epNumber}`;
