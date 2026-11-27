@@ -377,11 +377,11 @@ function scoreNyaaItem(item, { epNumber, mode = 'any' }) {
     }
   } else {
     if (!meta.isBatch) {
-      score += 25;
-      scoreBreakdown.push('Single Episode (+25)');
+      score += 45;
+      scoreBreakdown.push('Prioritas Utama Single Episode (+45)');
     } else {
-      score += 8;
-      scoreBreakdown.push('Batch Fallback via --select-file (+8)');
+      score -= 15;
+      scoreBreakdown.push('Penalti Batch pada Single Episode Ingest (-15)');
     }
   }
 

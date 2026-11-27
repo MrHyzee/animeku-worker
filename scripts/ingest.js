@@ -507,10 +507,14 @@ function selectEpisodeFileIndexFromTorrent(torrentFilePath, targetEpNumber) {
 
   const padded = String(targetEpNumber).padStart(2, '0');
   const epRegexes = [
-    new RegExp(`[-\\s_]0*${targetEpNumber}(?:v\\d)?(?=\\s*[\\[\\(.]|$)`, 'i'),
-    new RegExp(`\\bS\\d+E0*${targetEpNumber}\\b`, 'i'),
-    new RegExp(`\\bEp(?:isode)?\\.?\\s*0*${targetEpNumber}\\b`, 'i'),
-    new RegExp(`\\b${padded}\\b`),
+    // 1. Format S01E02 / S02E02 (paling spesifik)
+    new RegExp(`\\bS\\d+E0*${targetEpNumber}(?:v\\d)?\\b`, 'i'),
+    // 2. Format Episode 02 / Ep. 02
+    new RegExp(`\\b(?:ep|episode)\\.?\\s*0*${targetEpNumber}(?:v\\d)?\\b`, 'i'),
+    // 3. Format " - 02 " atau " 02 [1080p]" (abaikan S02 season)
+    new RegExp(`(?<!S\\d{0,2})(?:-\\s*|\\s+)0*${targetEpNumber}(?:v\\d)?(?=\\s*[\\[\\(._]|$)`, 'i'),
+    // 4. Standalone padded number (bukan bagian dari S02)
+    new RegExp(`(?<![a-zA-Z0-9])0*${padded}(?:v\\d)?(?![a-zA-Z0-9])`),
   ];
 
   for (const reg of epRegexes) {
@@ -596,12 +600,14 @@ function downloadFromNyaaWithAria2(magnetOrUrl, { isBatch = false, targetEpNumbe
         throw new Error(`Tidak ditemukan file video untuk Episode ${targetEpNumber} di dalam paket Batch.`);
       }
 
+      let selectedBaseName = selected.baseName;
       console.log(`🎯 Selective Batch Download: Memilih File Index #${selected.fileIndex} -> "${selected.baseName}"`);
       execFileSync('aria2c', [
         '-d', downloadDir,
         '-x', '16',
         '-s', '16',
         '-j', '16',
+        '--file-allocation=none',
         '--seed-time=0',
         '--summary-interval=5',
         '--bt-stop-timeout=300',
@@ -611,7 +617,7 @@ function downloadFromNyaaWithAria2(magnetOrUrl, { isBatch = false, targetEpNumbe
     }
   }
 
-  // Temukan file video terbesar (.mkv / .mp4) di dalam downloadDir
+  // Temukan file video yang valid di dalam downloadDir
   const findVideosRecursive = (dir) => {
     let results = [];
     for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
@@ -625,12 +631,17 @@ function downloadFromNyaaWithAria2(magnetOrUrl, { isBatch = false, targetEpNumbe
     return results;
   };
 
-  const videos = findVideosRecursive(downloadDir).sort((a, b) => b.size - a.size);
+  const videos = findVideosRecursive(downloadDir);
   if (videos.length === 0) {
     throw new Error('File video (.mkv/.mp4) tidak ditemukan setelah proses download selesai.');
   }
 
-  return videos[0].path;
+  // Filter file yang ukurannya valid (> 20 MB) agar tidak membaca sparse empty file
+  const validVideos = videos.filter(v => v.size > 20 * 1024 * 1024).sort((a, b) => b.size - a.size);
+  if (validVideos.length > 0) {
+    return validVideos[0].path;
+  }
+  return videos.sort((a, b) => b.size - a.size)[0].path;
 }
 
 // ==============================================================================
