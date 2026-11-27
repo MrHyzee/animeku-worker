@@ -892,7 +892,7 @@ async function handleAutoIngestNyaa(options) {
   const epNumber = parseInt(options.ep || options.episode || '1', 10);
   const mode = (options.mode || 'hls').toLowerCase(); // 'hls' | 'direct'
   const isDryRun = !!options['dry-run'];
-  const jobId = options['job-id'] || options.jobId || process.env.JOB_ID || null;
+  const jobId = options['job-id'] || options.jobId || options.job_id || process.env.JOB_ID || null;
 
   if (!animeSlug) {
     console.log('🤖 Parameter --anime kosong. Mengalihkan otomatis ke Worker Daemon untuk mengklaim job dari Admin Panel...');
