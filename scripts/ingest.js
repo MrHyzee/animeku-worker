@@ -240,6 +240,9 @@ async function uploadToStorage(key, bufferOrFilePath, customContentType = null) 
     }
   } else {
     // Upload via S3 API (Cloudflare R2 atau Hetzner S3 Object Storage)
+    if (STORAGE_DRIVER === 'r2' && (!R2_ACCESS_KEY || !R2_SECRET_KEY)) {
+      throw new Error('Kredensial Cloudflare R2 belum diset! Harap isi R2_ACCESS_KEY dan R2_SECRET_KEY di form Cell 2 atau tambahkan ke Colab Secrets.');
+    }
     // Gunakan Buffer penuh agar AWS SDK v3 dapat me-retry otomatis jika koneksi stale setelah proses transcode panjang
     const bodyBuffer = isFilePath ? fs.readFileSync(bufferOrFilePath) : bufferOrFilePath;
     const putParams = {
