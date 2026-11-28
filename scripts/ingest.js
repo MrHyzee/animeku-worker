@@ -37,8 +37,8 @@ const {
 // ==============================================================================
 // KONFIGURASI CLOUDFLARE D1 & MULTI-STORAGE (R2 TESTING <-> HETZNER PROD)
 // ==============================================================================
-const ACCOUNT_ID = process.env.CF_ACCOUNT_ID || '';
-const DATABASE_ID = process.env.CF_DATABASE_ID || '';
+const ACCOUNT_ID = process.env.CF_ACCOUNT_ID || '5b5d0b730a79c86cf659a0d01f86ba9f';
+const DATABASE_ID = process.env.CF_DATABASE_ID || 'b51144f3-8050-4349-815c-ecb3402510f7';
 const API_TOKEN = process.env.CF_API_TOKEN || '';
 
 const STORAGE_DRIVER = (process.env.STORAGE_DRIVER || 'r2').toLowerCase(); // 'r2' | 'hetzner'
@@ -48,9 +48,9 @@ const MEDIA_BASE_URL = (
   (STORAGE_DRIVER === 'hetzner' ? 'https://media.animeku.app' : `${WORKER_BASE_URL}/media`)
 ).replace(/\/+$/, '');
 
-// Kredensial R2 / Hetzner S3
-const R2_ACCESS_KEY = process.env.R2_ACCESS_KEY || '';
-const R2_SECRET_KEY = process.env.R2_SECRET_KEY || '';
+// Kredensial R2 / Hetzner S3 (Default AnimeKu Media Bucket)
+const R2_ACCESS_KEY = process.env.R2_ACCESS_KEY || 'd049e38782fa0463dda2dc0129cb6fa5';
+const R2_SECRET_KEY = process.env.R2_SECRET_KEY || '100d2ff77386ce351f80b82ec300b6ee8b1a71fd271ac73c6f12c829d67a3f87';
 const BUCKET_NAME = process.env.R2_BUCKET_NAME || 'animekuapp-media';
 
 const HETZNER_RCLONE_REMOTE = process.env.HETZNER_RCLONE_REMOTE || 'hetzner:/home/media';
