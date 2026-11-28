@@ -42,7 +42,7 @@ const DATABASE_ID = process.env.CF_DATABASE_ID || 'b51144f3-8050-4349-815c-ecb34
 const API_TOKEN = process.env.CF_API_TOKEN || '';
 
 const STORAGE_DRIVER = (process.env.STORAGE_DRIVER || 'r2').toLowerCase(); // 'r2' | 'hetzner'
-const WORKER_BASE_URL = (process.env.WORKER_BASE_URL || 'https://animeku-api.riansupriyanto11.workers.dev').replace(/\/+$/, '');
+const WORKER_BASE_URL = (process.env.WORKER_BASE_URL || 'http://103.52.115.44').replace(/\/+$/, '');
 const MEDIA_BASE_URL = (
   process.env.MEDIA_BASE_URL ||
   (STORAGE_DRIVER === 'hetzner' ? 'https://media.animeku.app' : `${WORKER_BASE_URL}/media`)
