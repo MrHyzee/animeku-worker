@@ -36,13 +36,9 @@ const {
 } = require('./discover_series');
 
 // ==============================================================================
-// KONFIGURASI CLOUDFLARE D1 & MULTI-STORAGE (R2 TESTING <-> HETZNER PROD)
+// KONFIGURASI MANDIRI VPS & BUNNY STREAM (ZERO CLOUDFLARE RUNTIME)
 // ==============================================================================
-const ACCOUNT_ID = process.env.CF_ACCOUNT_ID || '5b5d0b730a79c86cf659a0d01f86ba9f';
-const DATABASE_ID = process.env.CF_DATABASE_ID || 'b51144f3-8050-4349-815c-ecb3402510f7';
-const API_TOKEN = process.env.CF_API_TOKEN || '';
-
-const STORAGE_DRIVER = (process.env.STORAGE_DRIVER || 'bunny').toLowerCase(); // 'bunny' | 'r2' | 'hetzner'
+const STORAGE_DRIVER = (process.env.STORAGE_DRIVER || 'bunny').toLowerCase(); // 'bunny' (Produksi Utama) | 'hetzner' | 'r2'
 const WORKER_BASE_URL = (process.env.WORKER_BASE_URL || 'http://103.52.115.44').replace(/\/+$/, '');
 const BUNNY_LIBRARY_ID = process.env.BUNNY_LIBRARY_ID || '824044';
 const BUNNY_API_KEY = process.env.BUNNY_API_KEY || '9c54f545-977e-4a9b-ac2810ab3206-1352-4634';
@@ -56,52 +52,40 @@ const MEDIA_BASE_URL = (
     : (STORAGE_DRIVER === 'hetzner' ? 'https://media.animeku.app' : `${WORKER_BASE_URL}/media`))
 ).replace(/\/+$/, '');
 
-// Kredensial R2 / Hetzner S3 (Default AnimeKu Media Bucket)
-const R2_ACCESS_KEY = process.env.R2_ACCESS_KEY || 'd049e38782fa0463dda2dc0129cb6fa5';
-const R2_SECRET_KEY = process.env.R2_SECRET_KEY || '100d2ff77386ce351f80b82ec300b6ee8b1a71fd271ac73c6f12c829d67a3f87';
-const BUCKET_NAME = process.env.R2_BUCKET_NAME || 'animekuapp-media';
-
+// Optional Fallback Storage S3 / Hetzner
 const HETZNER_RCLONE_REMOTE = process.env.HETZNER_RCLONE_REMOTE || 'hetzner:/home/media';
 const HETZNER_S3_ENDPOINT = process.env.HETZNER_S3_ENDPOINT || '';
+const BUCKET_NAME = process.env.R2_BUCKET_NAME || 'animekuapp-media';
 
-const s3 = new S3Client({
-  region: 'auto',
-  endpoint: STORAGE_DRIVER === 'hetzner' && HETZNER_S3_ENDPOINT
-    ? HETZNER_S3_ENDPOINT
-    : `https://${ACCOUNT_ID}.r2.cloudflarestorage.com`,
-  credentials: {
-    accessKeyId: process.env.HETZNER_ACCESS_KEY || R2_ACCESS_KEY,
-    secretAccessKey: process.env.HETZNER_SECRET_KEY || R2_SECRET_KEY,
-  },
-  maxAttempts: 5,
-});
+let s3 = null;
+if (STORAGE_DRIVER === 'hetzner' || STORAGE_DRIVER === 'r2') {
+  s3 = new S3Client({
+    region: 'auto',
+    endpoint: HETZNER_S3_ENDPOINT || process.env.S3_ENDPOINT || '',
+    credentials: {
+      accessKeyId: process.env.HETZNER_ACCESS_KEY || process.env.R2_ACCESS_KEY || '',
+      secretAccessKey: process.env.HETZNER_SECRET_KEY || process.env.R2_SECRET_KEY || '',
+    },
+    maxAttempts: 5,
+  });
+}
 
 // ==============================================================================
-// HELPER DATABASE D1 & STORAGE ADAPTER
+// HELPER DATABASE POSTGRESQL MANDIRI VIA REST API VPS
 // ==============================================================================
 async function executeD1Query(sql, params = []) {
-  if (!API_TOKEN) {
-    return [];
-  }
   try {
-    const res = await fetch(`https://api.cloudflare.com/client/v4/accounts/${ACCOUNT_ID}/d1/database/${DATABASE_ID}/query`, {
+    const res = await fetch(`${WORKER_BASE_URL}/api/v1/internal/query`, {
       method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${API_TOKEN}`,
-        'Content-Type': 'application/json',
-      },
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ sql, params }),
     });
-    const data = await res.json();
-    if (!data.success) {
-      console.warn(`⚠️ D1 Query Warning: ${JSON.stringify(data.errors || data.messages)}`);
-      return [];
+    if (res.ok) {
+      const data = await res.json();
+      return data.results || [];
     }
-    return data.result?.[0]?.results || [];
-  } catch (err) {
-    console.warn(`⚠️ D1 Query Network Warning: ${err.message}`);
-    return [];
-  }
+  } catch (_) {}
+  return [];
 }
 
 async function getAnimeDetails(slugOrId, options = {}) {
@@ -1002,14 +986,14 @@ async function handleAutoIngestNyaa(options) {
     }
 
     // 6. SINGLE-FILE DIRECT VIDEO UPLOAD (High-Throughput Unlimited Pipeline)
-    await reportJobProgress(jobId, { status: 'uploading', percent: 75, log: 'Mengunggah Single-File video utuh ke Cloudflare R2...' });
+    await reportJobProgress(jobId, { status: 'uploading', percent: 75, log: `Mengunggah Single-File video utuh ke ${STORAGE_DRIVER.toUpperCase()}...` });
     const ext = path.extname(videoFilePath).replace('.', '') || 'mkv';
     const videoKey = `${basePrefix}/video.${ext}`;
     const streamUrl = await uploadToStorage(videoKey, videoFilePath);
 
-    await reportJobProgress(jobId, { status: 'uploading', percent: 90, log: `Mendaftarkan episode ke database Cloudflare D1...` });
+    await reportJobProgress(jobId, { status: 'uploading', percent: 90, log: 'Mendaftarkan episode ke database PostgreSQL...' });
 
-    // 7. Registrasi ke Database D1 via Webhook /api/v1/internal/ingest
+    // 7. Registrasi ke Database PostgreSQL via Webhook /api/v1/internal/ingest
     const webhookRes = await fetch(`${WORKER_BASE_URL}/api/v1/internal/ingest`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -1029,7 +1013,7 @@ async function handleAutoIngestNyaa(options) {
     console.log(`\n🎉 AUTO-INGEST SELESAI: ${anime.title} Episode ${epNumber}`);
     console.log(`   • Stream URL : ${streamUrl}`);
     console.log(`   • Sub Indo   : ${subIndoUrl || 'Embedded'}`);
-    console.log(`   • Status D1  : ${webhookJson.message}\n`);
+    console.log(`   • Status DB  : ${webhookJson.message}\n`);
 
     await reportJobProgress(jobId, {
       status: 'completed',
