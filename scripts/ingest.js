@@ -1325,6 +1325,8 @@ async function handleWorkerDaemon(options) {
       effectiveMode = job.transcode_mode;
     } else if (job.mode) {
       effectiveMode = job.mode;
+    } else if (job.logs && (job.logs.includes('mode:direct') || job.logs.includes('mode:mkv'))) {
+      effectiveMode = 'direct';
     } else if (job.output_resolutions) {
       try {
         const resArr = typeof job.output_resolutions === 'string' ? JSON.parse(job.output_resolutions) : job.output_resolutions;
