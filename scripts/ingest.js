@@ -1198,7 +1198,7 @@ async function handleAutoIngestNyaa(options) {
 async function handleBatchSeasonRolling(options) {
   const animeSlug = options.anime || options.slug;
   const rangeStr = options.range || '1-12';
-  const mode = options.mode || 'hls';
+  const mode = options.mode || 'direct';
   const isDryRun = !!options['dry-run'];
 
   if (!animeSlug) {
@@ -1252,7 +1252,7 @@ async function handleBatchSeasonRolling(options) {
 // ==============================================================================
 async function handleWorkerDaemon(options) {
   const runOnce = !!options.once;
-  const mode = options.mode || 'hls';
+  const mode = options.mode || 'direct';
   const workerNode = options.worker || process.env.WORKER_NODE || 'google-colab';
   const targetJobId = options.job || options['job-id'] || process.env.JOB_ID || null;
   const specificSlug = options.anime || options.slug || null;
@@ -1264,7 +1264,7 @@ async function handleWorkerDaemon(options) {
   console.log(`\n======================================================================`);
   console.log(`🤖 CLOUD INGESTION WORKER DAEMON BERJALAN (${workerNode})`);
   console.log(`   Storage Driver  : ${STORAGE_DRIVER.toUpperCase()} (${MEDIA_BASE_URL})`);
-  console.log(`   Transcode Mode  : ${mode.toUpperCase()} (fMP4 Single-File Byte-Range)`);
+  console.log(`   Default Mode    : ${mode.toUpperCase()} (Direct Single-File MKV/MP4 Fast Streaming)`);
   if (targetJobId) console.log(`   Specific Job ID : ${targetJobId}`);
   if (specificSlug) console.log(`   Filter Slug     : ${specificSlug}`);
   console.log(`   Auto-Stop Policy: ${autoStopEnabled ? `AKTIF (${idleTimeoutSeconds}s / ${(idleTimeoutSeconds / 60).toFixed(1)} menit Cooldown)` : 'STANDBY (Non-stop)'}`);
