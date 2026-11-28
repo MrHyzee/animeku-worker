@@ -17,6 +17,7 @@
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
+const https = require('https');
 const { execFileSync, spawnSync, spawn } = require('child_process');
 const { S3Client, PutObjectCommand } = require('@aws-sdk/client-s3');
 const {
@@ -41,11 +42,18 @@ const ACCOUNT_ID = process.env.CF_ACCOUNT_ID || '5b5d0b730a79c86cf659a0d01f86ba9
 const DATABASE_ID = process.env.CF_DATABASE_ID || 'b51144f3-8050-4349-815c-ecb3402510f7';
 const API_TOKEN = process.env.CF_API_TOKEN || '';
 
-const STORAGE_DRIVER = (process.env.STORAGE_DRIVER || 'r2').toLowerCase(); // 'r2' | 'hetzner'
+const STORAGE_DRIVER = (process.env.STORAGE_DRIVER || 'bunny').toLowerCase(); // 'bunny' | 'r2' | 'hetzner'
 const WORKER_BASE_URL = (process.env.WORKER_BASE_URL || 'http://103.52.115.44').replace(/\/+$/, '');
+const BUNNY_LIBRARY_ID = process.env.BUNNY_LIBRARY_ID || '824044';
+const BUNNY_API_KEY = process.env.BUNNY_API_KEY || '9c54f545-977e-4a9b-ac2810ab3206-1352-4634';
+const BUNNY_CDN_HOSTNAME = (process.env.BUNNY_CDN_HOSTNAME || 'vz-a43d21ad-647.b-cdn.net').replace(/\/+$/, '');
+const BUNNY_READONLY_KEY = process.env.BUNNY_READONLY_KEY || '855cf6c4-9247-4f19-ab6326b314c6-0617-4818';
+
 const MEDIA_BASE_URL = (
   process.env.MEDIA_BASE_URL ||
-  (STORAGE_DRIVER === 'hetzner' ? 'https://media.animeku.app' : `${WORKER_BASE_URL}/media`)
+  (STORAGE_DRIVER === 'bunny'
+    ? `https://${BUNNY_CDN_HOSTNAME}`
+    : (STORAGE_DRIVER === 'hetzner' ? 'https://media.animeku.app' : `${WORKER_BASE_URL}/media`))
 ).replace(/\/+$/, '');
 
 // Kredensial R2 / Hetzner S3 (Default AnimeKu Media Bucket)
@@ -210,7 +218,69 @@ function getContentTypeByExt(key) {
 }
 
 /**
- * Multi-Storage Upload Adapter (Mendukung Cloudflare R2 saat Tes & Hetzner Storage Box saat Prod)
+ * Upload Video ke Bunny Stream (Video Library ID & API Key)
+ */
+function uploadVideoToBunny(filePath, title) {
+  return new Promise(async (resolve, reject) => {
+    try {
+      console.log(`🐰 [BUNNY STREAM] Mendaftarkan video di Library ${BUNNY_LIBRARY_ID} (${title})...`);
+      const createData = JSON.stringify({ title });
+      const createRes = await fetch(`https://video.bunnycdn.com/library/${BUNNY_LIBRARY_ID}/videos`, {
+        method: 'POST',
+        headers: {
+          'AccessKey': BUNNY_API_KEY,
+          'Content-Type': 'application/json',
+          'Accept': 'application/json',
+        },
+        body: createData,
+      });
+
+      if (!createRes.ok) {
+        const errText = await createRes.text();
+        return reject(new Error(`Bunny Create Video HTTP ${createRes.status}: ${errText}`));
+      }
+
+      const createJson = await createRes.json();
+      const videoGuid = createJson.guid;
+      const stat = fs.statSync(filePath);
+      const sizeMb = (stat.size / (1024 * 1024)).toFixed(2);
+      console.log(`🐰 [BUNNY STREAM] Video didaftarkan: ${videoGuid}. Mengunggah ${sizeMb} MB via HTTP stream...`);
+
+      const req = https.request({
+        hostname: 'video.bunnycdn.com',
+        port: 443,
+        path: `/library/${BUNNY_LIBRARY_ID}/videos/${videoGuid}`,
+        method: 'PUT',
+        headers: {
+          'AccessKey': BUNNY_API_KEY,
+          'Content-Type': 'application/octet-stream',
+          'Content-Length': stat.size,
+        },
+      }, (res) => {
+        let respBody = '';
+        res.on('data', chunk => respBody += chunk);
+        res.on('end', () => {
+          if (res.statusCode >= 200 && res.statusCode < 300) {
+            const playlistUrl = `https://${BUNNY_CDN_HOSTNAME}/${videoGuid}/playlist.m3u8`;
+            console.log(`🎉 [BUNNY STREAM] Unggah sukses! HLS Master: ${playlistUrl}`);
+            resolve({ guid: videoGuid, playlistUrl });
+          } else {
+            reject(new Error(`Bunny Stream PUT failed HTTP ${res.statusCode}: ${respBody}`));
+          }
+        });
+      });
+
+      req.on('error', reject);
+      const fileStream = fs.createReadStream(filePath);
+      fileStream.pipe(req);
+    } catch (err) {
+      reject(err);
+    }
+  });
+}
+
+/**
+ * Multi-Storage Upload Adapter (Mendukung Bunny Stream [Utama], Hetzner, & Cloudflare R2)
  */
 async function uploadToStorage(key, bufferOrFilePath, customContentType = null) {
   const contentType = customContentType || getContentTypeByExt(key);
@@ -226,8 +296,33 @@ async function uploadToStorage(key, bufferOrFilePath, customContentType = null) 
 
   console.log(`☁️  [${STORAGE_DRIVER.toUpperCase()}] Mengunggah -> ${key} (${fileSizeStr})...`);
 
+  // 1. DRIVER BUNNY STREAM (Default Production Video Engine)
+  if (STORAGE_DRIVER === 'bunny') {
+    if (key.endsWith('.mp4') || key.endsWith('.mkv') || key.endsWith('.webm') || key.endsWith('.ts')) {
+      let localVideoPath = isFilePath ? bufferOrFilePath : null;
+      let tempCreated = false;
+      if (!isFilePath) {
+        localVideoPath = path.join(os.tmpdir(), `bunny_upload_${Date.now()}_${path.basename(key)}`);
+        fs.writeFileSync(localVideoPath, bufferOrFilePath);
+        tempCreated = true;
+      }
+      try {
+        const videoTitle = path.basename(key);
+        const result = await uploadVideoToBunny(localVideoPath, videoTitle);
+        return result.playlistUrl;
+      } finally {
+        if (tempCreated && fs.existsSync(localVideoPath)) fs.unlinkSync(localVideoPath);
+      }
+    } else {
+      // Subtitle atau file pendukung non-video
+      const subTargetUrl = `${WORKER_BASE_URL}/media/${key}`;
+      console.log(`ℹ️ [BUNNY] Subtitle didaftarkan: ${subTargetUrl}`);
+      return subTargetUrl;
+    }
+  }
+
+  // 2. DRIVER HETZNER STORAGE BOX (RCLONE)
   if (STORAGE_DRIVER === 'hetzner' && !HETZNER_S3_ENDPOINT) {
-    // Upload ke Hetzner Storage Box via rclone (SFTP / WebDAV)
     let tmpFile = isFilePath ? bufferOrFilePath : null;
     if (!tmpFile) {
       tmpFile = path.join(os.tmpdir(), `animeku_upload_${Date.now()}_${path.basename(key)}`);
@@ -238,31 +333,34 @@ async function uploadToStorage(key, bufferOrFilePath, customContentType = null) 
     } finally {
       if (!isFilePath && tmpFile && fs.existsSync(tmpFile)) fs.unlinkSync(tmpFile);
     }
-  } else {
-    // Upload via S3 API (Cloudflare R2 atau Hetzner S3 Object Storage)
-    if (STORAGE_DRIVER === 'r2' && (!R2_ACCESS_KEY || !R2_SECRET_KEY)) {
-      throw new Error('Kredensial Cloudflare R2 belum diset! Harap isi R2_ACCESS_KEY dan R2_SECRET_KEY di form Cell 2 atau tambahkan ke Colab Secrets.');
-    }
-    // Gunakan Buffer penuh agar AWS SDK v3 dapat me-retry otomatis jika koneksi stale setelah proses transcode panjang
-    const bodyBuffer = isFilePath ? fs.readFileSync(bufferOrFilePath) : bufferOrFilePath;
-    const putParams = {
-      Bucket: BUCKET_NAME,
-      Key: key,
-      Body: bodyBuffer,
-      ContentType: contentType,
-    };
+    const publicUrl = `${MEDIA_BASE_URL}/${key}`;
+    console.log(`✅ Berhasil diunggah: ${publicUrl}`);
+    return publicUrl;
+  }
 
-    let attempts = 0;
-    while (attempts < 5) {
-      try {
-        attempts++;
-        await s3.send(new PutObjectCommand(putParams));
-        break;
-      } catch (err) {
-        console.warn(`⚠️ Gagal unggah ${key} (Percobaan ${attempts}/5): ${err.message}`);
-        if (attempts >= 5) throw err;
-        await new Promise(r => setTimeout(r, 2000 * attempts));
-      }
+  // 3. DRIVER S3 OBJECT STORAGE (R2 / HETZNER S3)
+  if (STORAGE_DRIVER === 'r2' && (!R2_ACCESS_KEY || !R2_SECRET_KEY)) {
+    throw new Error('Kredensial Cloudflare R2 belum diset! Harap gunakan STORAGE_DRIVER=bunny.');
+  }
+
+  const bodyBuffer = isFilePath ? fs.readFileSync(bufferOrFilePath) : bufferOrFilePath;
+  const putParams = {
+    Bucket: BUCKET_NAME,
+    Key: key,
+    Body: bodyBuffer,
+    ContentType: contentType,
+  };
+
+  let attempts = 0;
+  while (attempts < 5) {
+    try {
+      attempts++;
+      await s3.send(new PutObjectCommand(putParams));
+      break;
+    } catch (err) {
+      console.warn(`⚠️ Gagal unggah ${key} (Percobaan ${attempts}/5): ${err.message}`);
+      if (attempts >= 5) throw err;
+      await new Promise(r => setTimeout(r, 2000 * attempts));
     }
   }
 
