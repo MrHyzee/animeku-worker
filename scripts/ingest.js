@@ -793,23 +793,50 @@ function downloadFromNyaaWithAria2(magnetOrUrl, { isBatch = false, targetEpNumbe
       if (hashMatch) {
         const infoHash = hashMatch[1].toUpperCase();
         const torrentCachePath = path.join(downloadDir, `${infoHash}.torrent`);
+        
+        // Hapus cache lama jika rusak/bukan torrent
+        if (fs.existsSync(torrentCachePath)) {
+          const s = fs.statSync(torrentCachePath).size;
+          const head = fs.readFileSync(torrentCachePath).slice(0, 50).toString();
+          if (s < 2000 || head.includes('<html') || head.includes('<!DOCTYPE')) {
+            try { fs.unlinkSync(torrentCachePath); } catch (_) {}
+          }
+        }
+
         if (!fs.existsSync(torrentCachePath)) {
           console.log(`⚡ Mengunduh file .torrent resmi untuk bypass limit DHT Google Colab...`);
-          try {
-            execFileSync('curl', [
-              '-sL',
-              '-A', 'Mozilla/5.0',
-              '--max-time', '10',
-              `https://itorrents.org/torrent/${infoHash}.torrent`,
-              '-o', torrentCachePath
-            ]);
-            if (fs.existsSync(torrentCachePath) && fs.statSync(torrentCachePath).size > 200) {
-              console.log(`✅ File .torrent resmi didapatkan (${(fs.statSync(torrentCachePath).size / 1024).toFixed(1)} KB)! Memulai download langsung...`);
-              targetFileOrMagnet = torrentCachePath;
-            }
-          } catch (_) {}
-        } else {
+          const torrentMirrors = [
+            `https://itorrents.org/torrent/${infoHash}.torrent`,
+            `https://itorrents.org/torrent/${infoHash.toLowerCase()}.torrent`,
+          ];
+          for (const mirror of torrentMirrors) {
+            try {
+              execFileSync('curl', [
+                '-sL',
+                '-A', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
+                '--max-time', '8',
+                mirror,
+                '-o', torrentCachePath
+              ]);
+              if (fs.existsSync(torrentCachePath)) {
+                const s = fs.statSync(torrentCachePath).size;
+                const head = fs.readFileSync(torrentCachePath).slice(0, 50).toString();
+                if (s > 2000 && head.startsWith('d') && !head.includes('<html') && !head.includes('<!DOCTYPE')) {
+                  console.log(`✅ File .torrent resmi valid didapatkan (${(s / 1024).toFixed(1)} KB)!`);
+                  break;
+                } else {
+                  try { fs.unlinkSync(torrentCachePath); } catch (_) {}
+                }
+              }
+            } catch (_) {}
+          }
+        }
+
+        if (fs.existsSync(torrentCachePath)) {
           targetFileOrMagnet = torrentCachePath;
+        } else {
+          console.log(`ℹ️ Menggunakan Direct Magnet Link dengan TCP Tracker Booster...`);
+          targetFileOrMagnet = magnetOrUrl;
         }
       }
 
