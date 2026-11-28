@@ -1115,38 +1115,12 @@ async function handleAutoIngestNyaa(options) {
 
     await reportJobProgress(jobId, { status: mode === 'hls' ? 'transcoding' : 'uploading', percent: 75, log: `Memproses encoding video (${mode.toUpperCase()})...` });
 
-    // 6. Konversi Multi-Resolution HLS fMP4 Single-File atau Direct Upload (Dengan Circuit-Breaker Fallback)
-    let streamUrl = '';
-    if (mode === 'hls' && hasCommand('ffmpeg')) {
-      try {
-        const hlsDir = path.join(workDir, 'hls');
-        const hlsBuild = await buildMultiResHlsFmp4(videoFilePath, hlsDir, jobId);
-
-        await reportJobProgress(jobId, { status: 'uploading', percent: 89, log: `Mengunggah file Multi-Resolution HLS ke Cloudflare R2...` });
-
-        // Sortir agar master.m3u8 diunggah paling akhir setelah segmen m4s siap
-        const sortedFiles = [...hlsBuild.files].sort((a, b) => {
-          if (a.endsWith('master.m3u8')) return 1;
-          if (b.endsWith('master.m3u8')) return -1;
-          return 0;
-        });
-
-        for (const fileFullPath of sortedFiles) {
-          const fileName = path.basename(fileFullPath);
-          await uploadToStorage(`${basePrefix}/${fileName}`, fileFullPath);
-        }
-        streamUrl = `${MEDIA_BASE_URL}/${basePrefix}/master.m3u8`;
-      } catch (hlsErr) {
-        console.warn(`⚠️ HLS transcoding gagal (${hlsErr.message}). Mengaktifkan circuit-breaker fallback ke Direct MKV/MP4...`);
-        const ext = path.extname(videoFilePath).replace('.', '') || 'mkv';
-        const videoKey = `${basePrefix}/video.${ext}`;
-        streamUrl = await uploadToStorage(videoKey, videoFilePath);
-      }
-    } else {
-      const ext = path.extname(videoFilePath).replace('.', '') || 'mkv';
-      const videoKey = `${basePrefix}/video.${ext}`;
-      streamUrl = await uploadToStorage(videoKey, videoFilePath);
-    }
+    // 6. SINGLE-FILE DIRECT VIDEO UPLOAD (High-Throughput Unlimited Pipeline)
+    // Melewatkan seluruh proses HLS demi kecepatan maksimal ribuan episode harian
+    await reportJobProgress(jobId, { status: 'uploading', percent: 80, log: `Mengunggah berkas Single-File video utuh ke storage...` });
+    const ext = path.extname(videoFilePath).replace('.', '') || 'mkv';
+    const videoKey = `${basePrefix}/video.${ext}`;
+    const streamUrl = await uploadToStorage(videoKey, videoFilePath);
 
     await reportJobProgress(jobId, { status: 'uploading', percent: 90, log: `Mendaftarkan episode ke database Cloudflare D1...` });
 
@@ -1344,22 +1318,8 @@ async function handleWorkerDaemon(options) {
     console.log(`🔥 [JOB MASUK DARI ADMIN] [${job.id}]: ${job.anime_title || job.anime_slug} - Episode ${job.episode_number}`);
     console.log(`   Sumber : [${job.source_provider || 'nyaa'}] ${job.source_title || '-'}`);
 
-    // Deteksi mode per-job: jika job meminta direct/mkv atau default daemon
-    let effectiveMode = mode;
-    if (job.transcode_mode) {
-      effectiveMode = job.transcode_mode;
-    } else if (job.mode) {
-      effectiveMode = job.mode;
-    } else if (job.logs && (job.logs.includes('mode:direct') || job.logs.includes('mode:mkv'))) {
-      effectiveMode = 'direct';
-    } else if (job.output_resolutions) {
-      try {
-        const resArr = typeof job.output_resolutions === 'string' ? JSON.parse(job.output_resolutions) : job.output_resolutions;
-        if (Array.isArray(resArr) && (resArr.includes('direct') || resArr.includes('mkv'))) {
-          effectiveMode = 'direct';
-        }
-      } catch (_) {}
-    }
+    // Pipeline AnimeKu didedikasikan 100% untuk Single-File Direct MKV/MP4 Fast Streaming (High-Throughput)
+    let effectiveMode = 'direct';
 
     console.log(`   Mode   : ${effectiveMode === 'direct' ? '📦 SINGLE FILE MKV (Direct Tanpa Transcoding HLS)' : '🎬 MULTI-RES HLS fMP4'}`);
     console.log(`   Status : Mengunci job dan memulai pemrosesan video + subtitle...`);
