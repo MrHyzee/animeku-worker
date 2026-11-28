@@ -8,7 +8,7 @@
  * 1. Nyaa.si 4-Layer Smart Search (Prioritas Multi-Sub Indo -> Eng Sub, Single & Batch)
  * 2. Selective Batch Rolling Loop (aria2c --bt-metadata-only & --select-file=N)
  * 3. Subtitle Extractor (ffprobe/ffmpeg) + Animeku Smart Fansub Unlimited AI Translator
- * 4. Multi-Resolution HLS fMP4 Single-File Transcoder (GPU NVENC / CPU Fallback: 4K/1080p/720p/480p)
+ * 4. Single-File Video Fast Direct Ingestion (High-Throughput MKV/MP4 ke Cloudflare R2 / Hetzner)
  * 5. Multi-Storage Adapter (STORAGE_DRIVER = r2 [Testing] | hetzner [Production])
  * 6. Vast.ai Worker Daemon (Auto-poll antrean ingestion_jobs & Auto-Stop saat selesai)
  * ==============================================================================
@@ -497,219 +497,9 @@ async function extractAndProcessSubtitleFromVideo(videoFilePath, {
 }
 
 // ==============================================================================
-// TRANSCODER MULTI-RESOLUTION HLS fMP4 SINGLE-FILE (4K / 1080p / 720p / 480p)
+// SINGLE-FILE VIDEO INGESTION PIPELINE (HIGH-THROUGHPUT DIRECT MKV/MP4)
 // ==============================================================================
-function getVideoHeight(videoFilePath) {
-  if (!hasCommand('ffprobe')) return 1080;
-  try {
-    const out = execFileSync('ffprobe', [
-      '-v', 'error',
-      '-select_streams', 'v:0',
-      '-show_entries', 'stream=height',
-      '-of', 'csv=p=0',
-      videoFilePath,
-    ], { encoding: 'utf8' }).trim();
-    const h = parseInt(out, 10);
-    return Number.isNaN(h) || h <= 0 ? 1080 : h;
-  } catch {
-    return 1080;
-  }
-}
-
-function getVideoDuration(videoFilePath) {
-  if (!hasCommand('ffprobe')) return 1420;
-  try {
-    const out = execFileSync('ffprobe', [
-      '-v', 'error',
-      '-show_entries', 'format=duration',
-      '-of', 'default=noprint_wrappers=1:nokey=1',
-      videoFilePath,
-    ], { encoding: 'utf8' }).trim();
-    const d = parseFloat(out);
-    return Number.isNaN(d) || d <= 0 ? 1420 : d;
-  } catch {
-    return 1420;
-  }
-}
-
-async function buildMultiResHlsFmp4(videoFilePath, outputDir, jobId = null) {
-  fs.mkdirSync(outputDir, { recursive: true });
-  const sourceHeight = getVideoHeight(videoFilePath);
-  const totalDurationSec = getVideoDuration(videoFilePath);
-  const useGpu = hasNvidiaNvenc();
-
-  // Aturan No-Upscale Resolution Ladder
-  const allTiers = [
-    { name: '2160p', width: 3840, height: 2160, bitrate: '12000k', maxrate: '14000k', bufsize: '20000k', bandwidth: 13500000 },
-    { name: '1080p', width: 1920, height: 1080, bitrate: '4200k',  maxrate: '5000k',  bufsize: '7500k',  bandwidth: 4800000 },
-    { name: '720p',  width: 1280, height: 720,  bitrate: '2200k',  maxrate: '2600k',  bufsize: '4000k',  bandwidth: 2500000 },
-    { name: '480p',  width: 854,  height: 480,  bitrate: '1050k',  maxrate: '1300k',  bufsize: '2000k',  bandwidth: 1200000 },
-  ];
-
-  let activeTiers = allTiers.filter(t => t.height <= sourceHeight + 120);
-  if (activeTiers.length === 0) {
-    activeTiers = [allTiers[allTiers.length - 1]];
-  }
-
-  console.log(`🎬 Memulai Konversi Multi-Resolution HLS fMP4 (HYBRID MULTITASKING: 3 STREAM SEKALIGUS)`);
-  console.log(`   Ladder     : [${activeTiers.map(t => t.name).join(', ')}] berjalan serentak memanfaatkan RAM & GPU VRAM!`);
-  console.log(`   Akselerasi : ${useGpu ? '🚀 NVIDIA NVENC Hardware Transcoder (T4 GPU)' : '⚙️ CPU Multi-Thread'}`);
-  console.log(`   Durasi     : ~${Math.round(totalDurationSec / 60)} menit (${Math.round(totalDurationSec)}s)`);
-
-  const absVideoPath = path.resolve(videoFilePath);
-  const tierProgress = {};
-  let lastReportTs = 0;
-
-  await Promise.all(activeTiers.map(tier => {
-    return new Promise((resolve, reject) => {
-      const playlistName = `${tier.name}.m3u8`;
-      const segmentFileName = `${tier.name}.m4s`;
-
-      const vCodecArgs = useGpu
-        ? ['-c:v', 'h264_nvenc', '-preset', 'p1', '-tune', 'hq', '-rc', 'vbr', '-cq', '23', '-spatial-aq', '1']
-        : ['-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '23', '-threads', '2'];
-
-      const args = [
-        '-y',
-        '-nostats',
-        '-i', absVideoPath,
-        '-map', '0:v:0',
-        '-map', '0:a:0?',
-        '-vf', `scale=-2:${tier.height}`,
-        ...vCodecArgs,
-        '-b:v', tier.bitrate,
-        '-maxrate', tier.maxrate,
-        '-bufsize', tier.bufsize,
-        '-pix_fmt', 'yuv420p',
-        '-g', '48',
-        '-keyint_min', '48',
-        '-c:a', 'aac',
-        '-b:a', '128k',
-        '-ac', '2',
-        '-max_muxing_queue_size', '2048',
-        '-f', 'hls',
-        '-hls_time', '6',
-        '-hls_list_size', '0',
-        '-hls_segment_type', 'fmp4',
-        '-hls_flags', 'single_file',
-        '-hls_fmp4_init_filename', segmentFileName,
-        '-hls_segment_filename', segmentFileName,
-        playlistName,
-      ];
-
-      console.log(`   🚀 [SPAWN PARALEL] Stream ${tier.name} aktif merender bersamaan...`);
-      const child = spawn('ffmpeg', args, { cwd: outputDir });
-
-      let stderrBuffer = '';
-      let lastLogTs = 0;
-
-      // PROAKTIF DRAIN STDERR AGAR PIPE BUFFER TIDAK DEADLOCK/HANG
-      child.stderr.on('data', chunk => {
-        const str = chunk.toString();
-        stderrBuffer += str;
-        if (stderrBuffer.length > 50000) stderrBuffer = stderrBuffer.slice(-20000);
-
-        const timeMatch = str.match(/time=(\d{2}):(\d{2}):(\d{2})/);
-        const speedMatch = str.match(/speed=\s*([\d\.]+)x/);
-        const fpsMatch = str.match(/fps=\s*([\d\.]+)/);
-
-        if (timeMatch) {
-          const curSec = parseInt(timeMatch[1], 10) * 3600 + parseInt(timeMatch[2], 10) * 60 + parseInt(timeMatch[3], 10);
-          tierProgress[tier.name] = {
-            curSec,
-            speed: speedMatch ? speedMatch[1] : '?',
-            fps: fpsMatch ? fpsMatch[1] : '?',
-          };
-
-          const now = Date.now();
-          if (now - lastLogTs > 4000) {
-            lastLogTs = now;
-            const pct = totalDurationSec > 0 ? Math.min(99, Math.round((curSec / totalDurationSec) * 100)) : '?';
-            console.log(`   ⚡ [${tier.name}] ${pct}% | speed: ${tierProgress[tier.name].speed}x | fps: ${tierProgress[tier.name].fps} | time: ${timeMatch[0].replace('time=', '')}`);
-          }
-
-          if (jobId && now - lastReportTs > 12000) {
-            lastReportTs = now;
-            let sumPct = 0;
-            let activeCount = 0;
-            for (const t of activeTiers) {
-              if (tierProgress[t.name]) {
-                sumPct += (tierProgress[t.name].curSec / (totalDurationSec || 1400)) * 100;
-                activeCount++;
-              }
-            }
-            if (activeCount > 0) {
-              const avgPct = sumPct / activeCount;
-              const mappedProgress = Math.min(88, Math.max(75, 75 + Math.round(avgPct * 0.13)));
-              const statusLine = activeTiers.map(t => `${t.name}:${tierProgress[t.name]?.speed ? tierProgress[t.name].speed + 'x' : '...'}`).join(' ');
-              reportJobProgress(jobId, {
-                status: 'transcoding',
-                percent: mappedProgress,
-                log: `Merender paralel HLS [${statusLine}]...`,
-              });
-            }
-          }
-        }
-      });
-
-      child.stdout.on('data', () => {}); // Drain stdout
-
-      child.on('close', code => {
-        if (code === 0) {
-          console.log(`   ✅ [STREAM SELESAI] Stream ${tier.name} (${segmentFileName}) rampung 100%!`);
-          resolve();
-        } else {
-          console.warn(`   ⚠️ Stream ${tier.name} exit dengan error code ${code}`);
-          if (useGpu) {
-            console.warn(`   🔄 Menjalankan fallback CPU ultrafast untuk ${tier.name}...`);
-            const fallbackArgs = args.map(a => a === 'h264_nvenc' ? 'libx264' : a);
-            const fallbackChild = spawn('ffmpeg', fallbackArgs, { cwd: outputDir });
-            fallbackChild.stderr.on('data', () => {}); // Drain
-            fallbackChild.stdout.on('data', () => {}); // Drain
-            fallbackChild.on('close', fCode => {
-              if (fCode === 0) {
-                console.log(`   ✅ [STREAM SELESAI] Stream ${tier.name} (fallback) rampung 100%!`);
-                resolve();
-              } else {
-                reject(new Error(`FFmpeg gagal pada stream ${tier.name} (code ${fCode}): ${stderrBuffer.slice(-500)}`));
-              }
-            });
-            fallbackChild.on('error', reject);
-          } else {
-            reject(new Error(`FFmpeg error pada stream ${tier.name} (exit code ${code}): ${stderrBuffer.slice(-500)}`));
-          }
-        }
-      });
-      child.on('error', reject);
-    });
-  }));
-
-  // Bangun Master Playlist (master.m3u8)
-  const masterLines = ['#EXTM3U', '#EXT-X-VERSION:7'];
-  for (const tier of activeTiers) {
-    masterLines.push(
-      `#EXT-X-STREAM-INF:BANDWIDTH=${tier.bandwidth},RESOLUTION=${tier.width}x${tier.height},NAME="${tier.name}"`,
-      `${tier.name}.m3u8`
-    );
-  }
-
-  const masterPath = path.join(outputDir, 'master.m3u8');
-  fs.writeFileSync(masterPath, masterLines.join('\n') + '\n', 'utf8');
-  console.log(`✅ Master HLS Playlist siap: ${masterPath}`);
-
-  const outputFiles = fs.readdirSync(outputDir).map(f => path.join(outputDir, f));
-  console.log(`📋 File HLS yang dihasilkan (${outputFiles.length} file):`);
-  outputFiles.forEach(f => {
-    const s = fs.statSync(f);
-    console.log(`   • ${path.basename(f)} (${(s.size / (1024 * 1024)).toFixed(2)} MB)`);
-  });
-
-  return {
-    masterPath,
-    tiers: activeTiers.map(t => t.name),
-    files: outputFiles,
-  };
-}
+// Transcoding HLS multi-res ditiadakan untuk kecepatan maksimal ribuan episode harian.
 
 // ==============================================================================
 // SELECTIVE BATCH & SINGLE TORRENT DOWNLOADER (ARIA2C)
@@ -991,7 +781,7 @@ async function handleSearchNyaa(options) {
     console.log(`\n🥇 REKOMENDASI #1 TERBAIK (SKOR: ${r.score} POIN):`);
     console.log(`   Judul Rilis  : ${r.title}`);
     console.log(`   Grup & Tipe  : [${r.release_group}] • ${r.type.toUpperCase()} ${r.batch_range ? `(Ep ${r.batch_range.start}-${r.batch_range.end})` : ''}`);
-    console.log(`   Resolusi     : ${r.resolution} -> Output HLS Ladder: [${r.output_resolutions.join(', ')}]`);
+    console.log(`   Resolusi     : ${r.resolution} (Single-File Direct Video)`);
     console.log(`   Strategi Sub : ${r.has_sub_indo ? '✅ ADA SUB INDO BAWAAN (Extract Indo)' : '🎭 ENGLISH SUB -> ANIMEKU SMART FANSUB TRANSLATE'}`);
     console.log(`   Ukuran & Seed: ${r.size} • ${r.seeders} Seeders`);
     console.log(`   Rincian Skor : ${r.score_breakdown.join(' | ')}`);
@@ -1021,7 +811,7 @@ async function handleSearchNyaa(options) {
 async function handleAutoIngestNyaa(options) {
   const animeSlug = options.anime || options.slug;
   const epNumber = parseInt(options.ep || options.episode || '1', 10);
-  const mode = (options.mode || 'hls').toLowerCase(); // 'hls' | 'direct'
+  const mode = 'direct';
   const isDryRun = !!options['dry-run'];
   const jobId = options['job-id'] || options.jobId || options.job_id || process.env.JOB_ID || null;
 
@@ -1113,11 +903,8 @@ async function handleAutoIngestNyaa(options) {
       availableSubs.push('en');
     }
 
-    await reportJobProgress(jobId, { status: mode === 'hls' ? 'transcoding' : 'uploading', percent: 75, log: `Memproses encoding video (${mode.toUpperCase()})...` });
-
     // 6. SINGLE-FILE DIRECT VIDEO UPLOAD (High-Throughput Unlimited Pipeline)
-    // Melewatkan seluruh proses HLS demi kecepatan maksimal ribuan episode harian
-    await reportJobProgress(jobId, { status: 'uploading', percent: 80, log: `Mengunggah berkas Single-File video utuh ke storage...` });
+    await reportJobProgress(jobId, { status: 'uploading', percent: 75, log: 'Mengunggah Single-File video utuh ke Cloudflare R2...' });
     const ext = path.extname(videoFilePath).replace('.', '') || 'mkv';
     const videoKey = `${basePrefix}/video.${ext}`;
     const streamUrl = await uploadToStorage(videoKey, videoFilePath);
@@ -1321,7 +1108,7 @@ async function handleWorkerDaemon(options) {
     // Pipeline AnimeKu didedikasikan 100% untuk Single-File Direct MKV/MP4 Fast Streaming (High-Throughput)
     let effectiveMode = 'direct';
 
-    console.log(`   Mode   : ${effectiveMode === 'direct' ? '📦 SINGLE FILE MKV (Direct Tanpa Transcoding HLS)' : '🎬 MULTI-RES HLS fMP4'}`);
+    console.log(`   Mode   : 📦 SINGLE-FILE VIDEO (Direct MKV/MP4 Fast Streaming)`);
     console.log(`   Status : Mengunci job dan memulai pemrosesan video + subtitle...`);
     console.log(`======================================================================\n`);
 
@@ -1648,7 +1435,7 @@ PENGGUNAAN:
 
 COMMANDS BARU (NYAA.SI & VAST.AI PIPELINE):
   search         Cari torrent terbaik di Nyaa.si (4-Layer Smart Search & Scoring)
-  auto-ingest    Download dari Nyaa.si (Single/Batch) -> Ekstrak/Smart Translate Sub -> Multi-Res HLS -> Upload
+  auto-ingest    Download dari Nyaa.si (Single/Batch) -> Ekstrak/Smart Translate Sub -> Single-File Video Upload
   batch-season   Rolling Loop 1 Season penuh dari torrent Batch (--range 1-12)
   translate-sub  Terjemahkan subtitle .en.ass/.srt ke .id.ass dengan Animeku Smart Fansub Engine
   worker-daemon  Jalankan daemon pekerja di Vast.ai untuk memproses antrean ingestion_jobs
@@ -1662,11 +1449,11 @@ CONTOH:
   # 1. Cari sumber terbaik di Nyaa.si (Prioritas Sub Indo)
   node backend/scripts/ingest.js search --anime solo-leveling --ep 1
 
-  # 2. Auto-ingest 1 episode dari Nyaa.si ke Multi-Res HLS (1080p/720p/480p) + Smart Sub Indo
-  node backend/scripts/ingest.js auto-ingest --anime solo-leveling --ep 1 --mode hls
+  # 2. Auto-ingest 1 episode dari Nyaa.si (Single-File Direct MKV) + Smart Sub Indo
+  node backend/scripts/ingest.js auto-ingest --anime solo-leveling --ep 1 --mode direct
 
   # 3. Rolling ingest 1 season penuh dari paket Batch
-  node backend/scripts/ingest.js batch-season --anime solo-leveling --range 1-12 --mode hls
+  node backend/scripts/ingest.js batch-season --anime solo-leveling --range 1-12 --mode direct
 
   # 4. Tes Smart Fansub Translator pada file subtitle Inggris
   node backend/scripts/ingest.js translate-sub --in ./ep1.en.ass --out ./ep1.id.ass --category donghua
@@ -1685,7 +1472,6 @@ if (require.main === module) {
 module.exports = {
   uploadToStorage,
   extractAndProcessSubtitleFromVideo,
-  buildMultiResHlsFmp4,
   handleSearchNyaa,
   handleAutoIngestNyaa,
 };
