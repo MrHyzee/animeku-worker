@@ -1343,8 +1343,6 @@ async function handleWorkerDaemon(options) {
     console.log(`\n======================================================================`);
     console.log(`🔥 [JOB MASUK DARI ADMIN] [${job.id}]: ${job.anime_title || job.anime_slug} - Episode ${job.episode_number}`);
     console.log(`   Sumber : [${job.source_provider || 'nyaa'}] ${job.source_title || '-'}`);
-    console.log(`   Status : Mengunci job dan memulai pemrosesan video + subtitle...`);
-    console.log(`======================================================================\n`);
 
     // Deteksi mode per-job: jika job meminta direct/mkv atau default daemon
     let effectiveMode = mode;
@@ -1362,6 +1360,10 @@ async function handleWorkerDaemon(options) {
         }
       } catch (_) {}
     }
+
+    console.log(`   Mode   : ${effectiveMode === 'direct' ? '📦 SINGLE FILE MKV (Direct Tanpa Transcoding HLS)' : '🎬 MULTI-RES HLS fMP4'}`);
+    console.log(`   Status : Mengunci job dan memulai pemrosesan video + subtitle...`);
+    console.log(`======================================================================\n`);
 
     try {
       await handleAutoIngestNyaa({
