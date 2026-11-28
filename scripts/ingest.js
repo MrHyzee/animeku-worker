@@ -1319,13 +1319,28 @@ async function handleWorkerDaemon(options) {
     console.log(`   Status : Mengunci job dan memulai pemrosesan video + subtitle...`);
     console.log(`======================================================================\n`);
 
+    // Deteksi mode per-job: jika job meminta direct/mkv atau default daemon
+    let effectiveMode = mode;
+    if (job.transcode_mode) {
+      effectiveMode = job.transcode_mode;
+    } else if (job.mode) {
+      effectiveMode = job.mode;
+    } else if (job.output_resolutions) {
+      try {
+        const resArr = typeof job.output_resolutions === 'string' ? JSON.parse(job.output_resolutions) : job.output_resolutions;
+        if (Array.isArray(resArr) && (resArr.includes('direct') || resArr.includes('mkv'))) {
+          effectiveMode = 'direct';
+        }
+      } catch (_) {}
+    }
+
     try {
       await handleAutoIngestNyaa({
         anime: job.anime_slug,
         ep: String(job.episode_number),
         magnet: job.magnet_or_url,
         batch: job.source_type === 'batch',
-        mode,
+        mode: effectiveMode,
         job_id: job.id,
         jobData: job,
       });
